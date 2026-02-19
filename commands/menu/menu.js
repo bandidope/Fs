@@ -29,15 +29,13 @@ function norm(s) {
 function icon(cat) {
   return CAT_ICON[cat] || CAT_ICON.default;
 }
-
-// límites típicos de WhatsApp (mejor truncar para evitar errores)
 function cut(str, max) {
   const s = String(str || "");
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
 function buildCategories(comandos) {
-  const categorias = new Map(); // cat -> Set(cmd)
+  const categorias = new Map();
   for (const cmd of new Set(comandos.values())) {
     if (!cmd?.category || !cmd?.command) continue;
 
@@ -69,10 +67,7 @@ function buildTextMenu({ botName, prefix, uptime, categorias }) {
     `▸ _estado_  : *online*\n` +
     `▸ _uptime_  : *${uptime}*\n` +
     `▸ _categorías_ : *${cats.length}*\n` +
-    `▸ _comandos_   : *${totalCmds}*\n\n` +
-    `┌──────────────────────┐\n` +
-    `│ ✧ *MENÚ DE COMANDOS* ✧\n` +
-    `└──────────────────────┘\n`;
+    `▸ _comandos_   : *${totalCmds}*\n\n`;
 
   const MAX_PER_CAT = 6;
   for (const c of cats) {
@@ -83,20 +78,31 @@ function buildTextMenu({ botName, prefix, uptime, categorias }) {
     out += `\n╰──────────────────────`;
   }
 
-  out += `\n\n💡 Usa: *${prefix}menu <categoría>*  o  *${prefix}menu* (interactivo)\n`;
+  out += `\n\n💡 Usa: *${prefix}menu* (lista) o *${prefix}menu texto*\n`;
   return out;
 }
 
-async function sendList(sock, from, payload, msg) {
-  // Baileys acepta este formato directo
-  // { text, footer, title, buttonText, sections }
-  return sock.sendMessage(from, payload, msg ? { quoted: msg } : undefined);
+// ✅ Enviar ListMessage clásico
+async function sendClassicList(sock, from, { title, text, footer, buttonText, sections }, msg) {
+  return sock.sendMessage(
+    from,
+    {
+      listMessage: {
+        title,
+        description: text,      // 👈 algunos usan description
+        footerText: footer,     // 👈 nombre clásico
+        buttonText,
+        sections,
+      },
+    },
+    msg ? { quoted: msg } : undefined
+  );
 }
 
 export default {
   command: ["menu"],
   category: "menu",
-  description: "Menú interactivo premium (listas y secciones)",
+  description: "Menú interactivo premium (listas)",
 
   run: async ({ sock, msg, from, settings, comandos, args = [] }) => {
     try {
@@ -112,17 +118,17 @@ export default {
       const categorias = buildCategories(comandos);
       const catsSorted = [...categorias.keys()].sort();
 
-      // ✅ Si piden menu texto completo
       const firstArg = norm(args[0]);
+
+      // ✅ Texto completo si lo piden
       if (firstArg === "texto" || firstArg === "text" || firstArg === "all") {
         const menuTxt = buildTextMenu({ botName, prefix, uptime, categorias });
         return sock.sendMessage(from, { text: menuTxt }, { quoted: msg });
       }
 
-      // ✅ Si piden una categoría => lista de comandos interactiva
+      // ✅ Si piden categoría => lista de comandos
       if (firstArg) {
         const cat = firstArg;
-
         if (!categorias.has(cat)) {
           return sock.sendMessage(
             from,
@@ -138,43 +144,47 @@ export default {
 
         const cmds = [...categorias.get(cat)].sort();
 
-        // Construir filas (cada fila ejecuta el comando)
         const rows = cmds.slice(0, 40).map((c) => ({
           title: cut(`${prefix}${c}`, 24),
-          description: cut(`Ejecutar comando ${prefix}${c}`, 72),
-          rowId: `${prefix}${c}`, // al tocar, envía este texto al chat
+          description: cut(`Ejecutar ${prefix}${c}`, 72),
+          rowId: `${prefix}${c}`, // al tocar, manda el comando al chat
         }));
 
-        // Agregar opciones extra
         rows.push({
-          title: cut("⬅️ Volver categorías", 24),
-          description: cut("Regresar al menú principal", 72),
+          title: cut("⬅️ Volver", 24),
+          description: cut("Regresar al menú", 72),
           rowId: `${prefix}menu`,
         });
+
         rows.push({
           title: cut("📄 Menú texto", 24),
-          description: cut("Ver menú completo en texto", 72),
+          description: cut("Ver menú en texto", 72),
           rowId: `${prefix}menu texto`,
         });
 
-        const payload = {
-          text: `📂 *Categoría:* ${icon(cat)} *${cat.toUpperCase()}*\n⏱ Uptime: ${uptime}`,
-          footer: `${botName} • ${prefix}menu`,
-          title: `${botName} — Comandos`,
-          buttonText: "Ver comandos",
-          sections: [
-            {
-              title: `Comandos (${cmds.length})`,
-              rows,
-            },
-          ],
-        };
+        const sections = [
+          {
+            title: `Comandos (${cmds.length})`,
+            rows,
+          },
+        ];
 
-        // Intentar enviar lista; si falla => fallback texto
         try {
-          await sendList(sock, from, payload, msg);
+          await sendClassicList(
+            sock,
+            from,
+            {
+              title: `${botName} — ${icon(cat)} ${cat.toUpperCase()}`,
+              text: `⏱ Uptime: ${uptime}\nSelecciona un comando:`,
+              footer: `Prefijo: ${prefix}`,
+              buttonText: "Ver comandos",
+              sections,
+            },
+            msg
+          );
           return;
         } catch (e) {
+          // fallback texto
           const fallback =
             `📂 *${cat.toUpperCase()}* (${cmds.length})\n\n` +
             cmds.map((x) => `• ${prefix}${x}`).join("\n") +
@@ -183,45 +193,44 @@ export default {
         }
       }
 
-      // ✅ Menú principal (categorías) interactivo
-      // Construimos secciones con categorías (máx 10-15 secciones suele ser seguro)
-      // Si tienes MUCHAS categorías, lo agrupamos en 2 secciones.
-      const rows = catsSorted.map((c) => {
+      // ✅ Menú principal por categorías
+      const rows = catsSorted.slice(0, 45).map((c) => {
         const total = categorias.get(c)?.size || 0;
         return {
           title: cut(`${icon(c)} ${c.toUpperCase()}`, 24),
           description: cut(`Ver ${total} comandos`, 72),
-          rowId: `${prefix}menu ${c}`, // al tocar, manda ".menu music" por ejemplo
+          rowId: `${prefix}menu ${c}`, // manda ".menu music"
         };
       });
 
-      // Añadir accesos rápidos
       rows.push({
         title: cut("📄 Menú texto", 24),
         description: cut("Ver menú completo en texto", 72),
         rowId: `${prefix}menu texto`,
       });
 
-      const payload = {
-        text:
-          `👋 *${botName}*\n` +
-          `⏱ Uptime: *${uptime}*\n\n` +
-          `Toca una categoría 👇`,
-        footer: `Prefijo: ${prefix}`,
-        title: `${botName} — Menú`,
-        buttonText: "Abrir categorías",
-        sections: [
-          {
-            title: "Categorías",
-            rows: rows.slice(0, 45), // límite seguro
-          },
-        ],
-      };
+      const sections = [
+        {
+          title: "Categorías",
+          rows,
+        },
+      ];
 
-      // Intentar enviar lista; si falla => fallback texto
       try {
-        await sendList(sock, from, payload, msg);
+        await sendClassicList(
+          sock,
+          from,
+          {
+            title: `${botName} — Menú`,
+            text: `⏱ Uptime: ${uptime}\nToca una categoría 👇`,
+            footer: `Prefijo: ${prefix}`,
+            buttonText: "Abrir categorías",
+            sections,
+          },
+          msg
+        );
       } catch (e) {
+        // fallback texto
         const menuTxt = buildTextMenu({ botName, prefix, uptime, categorias });
         await sock.sendMessage(from, { text: menuTxt }, { quoted: msg });
       }
