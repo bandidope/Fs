@@ -1,15 +1,25 @@
 import yts from "yt-search";
 
-// Guarda la última búsqueda por chat (jid)
-const lastSearchByChat = new Map();
+// ✅ Config
+const TTL_MS = 20 * 1000; // 20 segundos
+const CLEAN_INTERVAL_MS = 1000; // limpia cada 1s
 
-// Limpieza automática cada minuto (borra búsquedas viejas)
+// Guardar búsqueda por "chat + usuario"
+const lastSearchByKey = new Map();
+/**
+ * key = `${from}:${senderJid}`
+ * value = { ts, query, results, ownerJid, resultsMsgId }
+ */
+
+// Limpieza automática (borra búsquedas viejas)
 setInterval(() => {
   const now = Date.now();
-  for (const [jid, data] of lastSearchByChat.entries()) {
-    if (!data || now - data.ts > 10 * 60 * 1000) lastSearchByChat.delete(jid);
+  for (const [key, data] of lastSearchByKey.entries()) {
+    if (!data || now - data.ts > TTL_MS) {
+      lastSearchByKey.delete(key);
+    }
   }
-}, 60 * 1000);
+}, CLEAN_INTERVAL_MS);
 
 function humanViews(n) {
   if (!Number.isFinite(n)) return null;
@@ -26,9 +36,9 @@ function headerBox(title) {
 function footerHint() {
   return (
     `────────────────────\n` +
-    `✅ MP3: *.play 1*\n` +
-    `🎬 MP4: *.play video 1*\n` +
-    `🧹 Cancelar: *.play cancel*`
+    `✅ MP3: *responde a la lista* y escribe: *.play 1*\n` +
+    `🎬 MP4: *responde a la lista* y escribe: *.play video 1*\n` +
+    `⏳ La búsqueda dura *20s*`
   );
 }
 
@@ -40,10 +50,11 @@ function buildHelp() {
     `✅ *Buscar*\n` +
     `• *.play <canción o artista>*\n` +
     `Ej: *.play yellow coldplay*\n\n` +
-    `✅ *Elegir (descarga MP3)*\n` +
-    `• *.play 1* / *.play 2* ...\n\n` +
-    `✅ *Elegir Video (MP4)*\n` +
-    `• *.play video 1* / *.play mp4 1*\n\n` +
+    `✅ *Elegir (solo 20s)*\n` +
+    `• Responde al mensaje de resultados y escribe:\n` +
+    `  *.play 1* / *.play 2* ...\n\n` +
+    `🎬 *Video*\n` +
+    `• Responde y escribe: *.play video 1*\n\n` +
     footerHint()
   );
 }
@@ -107,6 +118,25 @@ function makeExternalPreview({ title, body, thumbnailUrl, sourceUrl }) {
   };
 }
 
+// ✅ sacar JID del usuario
+function getSenderJid(msg, from) {
+  return msg?.key?.participant || from;
+}
+
+// ✅ obtener el id del mensaje al que respondió (quoted)
+function getQuotedMessageId(msg) {
+  const m = msg?.message;
+  const ctx =
+    m?.extendedTextMessage?.contextInfo ||
+    m?.imageMessage?.contextInfo ||
+    m?.videoMessage?.contextInfo ||
+    m?.documentMessage?.contextInfo ||
+    null;
+
+  // stanzaId suele ser el ID del mensaje citado
+  return ctx?.stanzaId || null;
+}
+
 export default {
   name: "play",
   command: ["play"],
@@ -116,6 +146,9 @@ export default {
     try {
       if (!sock || !from) return;
 
+      const senderJid = getSenderJid(msg, from);
+      const key = `${from}:${senderJid}`;
+
       const input = Array.isArray(args) ? args.join(" ").trim() : String(args ?? "").trim();
       const text = input.replace(/\s+/g, " ");
 
@@ -124,35 +157,45 @@ export default {
         return await sock.sendMessage(from, { text: buildHelp() }, { quoted: msg });
       }
 
-      // ✅ Cancelar búsqueda guardada
-      if (["cancel", "cancelar", "stop", "salir"].includes(text.toLowerCase())) {
-        lastSearchByChat.delete(from);
-        return await sock.sendMessage(
-          from,
-          { text: "🧹 Listo. Búsqueda borrada. Usa *.play <texto>* para buscar de nuevo." },
-          { quoted: msg }
-        );
-      }
-
-      // ✅ Modo: "video 1" para MP4 / "mp4 1"
+      // ✅ Modo: "video 1" / "mp4 1"
       const parts = text.split(/\s+/);
       const modeWord = (parts[0] || "").toLowerCase();
       const isVideoMode = ["video", "mp4"].includes(modeWord);
       const maybeNumber = isVideoMode ? parts[1] : parts[0];
 
-      // ✅ Elegir número
+      // ✅ Selección por número (OBLIGATORIO responder al mensaje)
       if (/^\d+$/.test(maybeNumber || "")) {
-        const pick = parseInt(maybeNumber, 10);
-        const data = lastSearchByChat.get(from);
+        const data = lastSearchByKey.get(key);
 
         if (!data?.results?.length) {
           return await sock.sendMessage(
             from,
-            { text: "⚠️ No tengo una búsqueda guardada. Usa *.play <texto>* primero." },
+            { text: "⚠️ No tienes una búsqueda activa. Usa *.play <texto>* y elige en 20s." },
             { quoted: msg }
           );
         }
 
+        // ⏳ Expirada
+        if (Date.now() - data.ts > TTL_MS) {
+          lastSearchByKey.delete(key);
+          return await sock.sendMessage(
+            from,
+            { text: "⏳ Tu búsqueda expiró (20s). Haz otra: *.play <texto>*" },
+            { quoted: msg }
+          );
+        }
+
+        // 🔒 Debe responder al mensaje de resultados
+        const quotedId = getQuotedMessageId(msg);
+        if (!quotedId || quotedId !== data.resultsMsgId) {
+          return await sock.sendMessage(
+            from,
+            { text: "📌 *Responde al mensaje de resultados* y escribe: *.play 1*" },
+            { quoted: msg }
+          );
+        }
+
+        const pick = parseInt(maybeNumber, 10);
         if (pick < 1 || pick > data.results.length) {
           return await sock.sendMessage(
             from,
@@ -182,10 +225,10 @@ export default {
           );
         }
 
-        // ✅ Miniatura del ELEGIDO antes de descargar
+        // ✅ Miniatura del ELEGIDO
         const dur = chosen.timestamp || chosen.duration?.timestamp || "N/A";
         const chan = chosen.author?.name || "N/A";
-        const preview = makeExternalPreview({
+        const chosenPreview = makeExternalPreview({
           title: chosen.title,
           body: `⏱ ${dur} • 👤 ${chan}`,
           thumbnailUrl: chosen.thumbnail,
@@ -194,10 +237,7 @@ export default {
 
         await sock.sendMessage(
           from,
-          {
-            text: buildChosenText(chosen, isVideoMode),
-            contextInfo: preview,
-          },
+          { text: buildChosenText(chosen, isVideoMode), contextInfo: chosenPreview },
           { quoted: msg }
         );
 
@@ -210,10 +250,12 @@ export default {
           comandos,
         });
 
+        // ✅ Una vez elegido, borramos para que no reutilicen después
+        lastSearchByKey.delete(key);
         return;
       }
 
-      // ✅ Protección: query demasiado larga
+      // ✅ Protección query larga
       if (text.length > 120) {
         return await sock.sendMessage(
           from,
@@ -241,10 +283,7 @@ export default {
         );
       }
 
-      // Guardar resultados
-      lastSearchByChat.set(from, { ts: Date.now(), query: text, results: videos });
-
-      // ✅ Miniatura del TOP resultado al mostrar lista
+      // ✅ Miniatura del TOP
       const top = videos[0];
       const topDur = top.timestamp || top.duration?.timestamp || "N/A";
       const topChan = top.author?.name || "N/A";
@@ -255,14 +294,24 @@ export default {
         sourceUrl: top.url,
       });
 
-      await sock.sendMessage(
+      // Mandar lista y guardar el ID del mensaje enviado
+      const sent = await sock.sendMessage(
         from,
-        {
-          text: buildResultsMessage(text, videos),
-          contextInfo: topPreview,
-        },
+        { text: buildResultsMessage(text, videos), contextInfo: topPreview },
         { quoted: msg }
       );
+
+      // ✅ Guardar búsqueda por usuario + id del mensaje de resultados
+      lastSearchByKey.set(key, {
+        ts: Date.now(),
+        query: text,
+        results: videos,
+        ownerJid: senderJid,
+        resultsMsgId: sent?.key?.id || null,
+      });
+
+      // Si por algún motivo no pudimos guardar el msgId, igual sirve TTL,
+      // pero la regla "responde al mensaje" no podría validarse.
     } catch (err) {
       console.error("[PLAY] Error:", err);
       try {
