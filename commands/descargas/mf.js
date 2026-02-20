@@ -2,7 +2,7 @@ import axios from "axios";
 
 const API_KEY = "dvyer";
 const API_URL = "https://api-adonix.ultraplus.click/download/mediafire";
-const MAX_MB = 800;
+const MAX_MB = 300;
 
 export default {
   command: ["mediafire", "mf"],
@@ -49,7 +49,6 @@ export default {
         sizeMB = parseFloat(file.size) * 1024;
       }
 
-      // 🔹 Si supera límite → solo enviar link
       if (sizeMB > MAX_MB) {
         return sock.sendMessage(from, {
           text:
@@ -65,47 +64,29 @@ export default {
         text: `⚡ Enviando archivo (${file.size})...`
       });
 
-      // 🔥 Detectar extensión real
-      const ext = file.type?.toLowerCase() || "";
-      const filename = file.filename.toLowerCase();
+      // 🔥 Detectar mimetype correcto
+      const ext = file.filename.split(".").pop().toLowerCase();
 
-      // 🎬 VIDEO MP4
-      if (ext === "mp4" || filename.endsWith(".mp4")) {
+      let mimetype = "application/octet-stream";
 
-        await sock.sendMessage(from, {
-          video: { url: file.link },
-          mimetype: "video/mp4",
-          caption:
-            `🎬 *MediaFire Downloader*\n\n` +
-            `📄 ${file.filename}\n` +
-            `📦 ${file.size}\n\n` +
-            `🤖 SonGokuBot`
-        });
+      if (ext === "mp4") mimetype = "video/mp4";
+      if (ext === "mp3") mimetype = "audio/mpeg";
+      if (ext === "pdf") mimetype = "application/pdf";
+      if (ext === "zip") mimetype = "application/zip";
+      if (ext === "png") mimetype = "image/png";
+      if (ext === "jpg" || ext === "jpeg") mimetype = "image/jpeg";
 
-      // 🎵 AUDIO MP3
-      } else if (ext === "mp3" || filename.endsWith(".mp3")) {
-
-        await sock.sendMessage(from, {
-          audio: { url: file.link },
-          mimetype: "audio/mpeg",
-          ptt: false
-        });
-
-      // 📂 OTROS ARCHIVOS
-      } else {
-
-        await sock.sendMessage(from, {
-          document: { url: file.link },
-          fileName: file.filename,
-          mimetype: "application/octet-stream",
-          caption:
-            `📁 *MediaFire Downloader*\n\n` +
-            `📄 ${file.filename}\n` +
-            `📦 ${file.size}\n\n` +
-            `🤖 SonGokuBot`
-        });
-
-      }
+      // 🔥 Enviar SIEMPRE como DOCUMENTO
+      await sock.sendMessage(from, {
+        document: { url: file.link },
+        fileName: file.filename,
+        mimetype: mimetype,
+        caption:
+          `📁 *MediaFire Downloader*\n\n` +
+          `📄 ${file.filename}\n` +
+          `📦 ${file.size}\n\n` +
+          `🤖 SonGokuBot`
+      });
 
     } catch (err) {
 
