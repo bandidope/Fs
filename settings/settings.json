@@ -4,5 +4,11 @@
   "prefix": ".",
   "ownerNumbers": ["51907376960"],
   "ownerLids": ["88077330554979"],
-  "botNumber": "51907376960"
+  "botNumber": "51907376960",
+
+  "newsletter": {
+    "enabled": true,
+    "jid": "120363207586611704@newsletter",
+    "name": "DvYer"
+  }
 }
