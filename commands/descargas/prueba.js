@@ -9,6 +9,8 @@ if (!fs.existsSync(TMP_DIR)) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 }
 
+const BASE_URL = 'https://api-sky.ultraplus.click';  // URL base del servidor de la API
+
 export default {
   command: ['ytmp1'],
   category: 'descarga',
@@ -58,14 +60,15 @@ export default {
       // Depuración: Verificar la respuesta completa de la API
       console.log("Respuesta de la API:", resolveResponse.data);
 
-      // Aquí obtenemos el enlace de descarga directo
-      const downloadUrl = resolveResponse.data?.media?.dl_download;
-      if (!downloadUrl) {
+      // Aquí obtenemos el enlace de descarga y construimos la URL completa
+      const relativeDownloadUrl = resolveResponse.data?.media?.dl_download;
+      if (!relativeDownloadUrl) {
         throw new Error('No se pudo obtener el enlace de descarga');
       }
 
-      // Imprimir el enlace de descarga directo
-      console.log('Enlace de descarga:', downloadUrl);
+      // Construir la URL completa usando la URL base
+      const downloadUrl = BASE_URL + relativeDownloadUrl;
+      console.log('Enlace de descarga:', downloadUrl);  // Depuración: Verificar el enlace de descarga completo
 
       // 2) Descargar el archivo
       const videoFilePath = path.join(TMP_DIR, 'video_360p.mp4');
