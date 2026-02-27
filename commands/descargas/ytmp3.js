@@ -121,7 +121,7 @@ function isENOSPC(err) {
 }
 
 export default {
-  command: ["ytmp3"],
+  command: ["ytmp3","play"],
   category: "descarga",
 
   run: async (ctx) => {
