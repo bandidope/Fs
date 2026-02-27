@@ -1,9 +1,9 @@
-
 import fs from "fs";
 import path from "path";
 import axios from "axios";
 import yts from "yt-search";
 import { exec } from "child_process";
+import os from "os";  // Para obtener la ruta temporal del sistema operativo
 
 const API_URL = "https://nexevo-api.vercel.app/download/y2";
 const COOLDOWN_TIME = 15 * 1000;
@@ -11,7 +11,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const cooldowns = new Map();
 
-const TMP_DIR = path.join(process.cwd(), "tmp");
+// Usamos la carpeta temporal del sistema (usualmente con más espacio disponible)
+const TMP_DIR = path.join(os.tmpdir(), "ytmp4"); // Usamos os.tmpdir() para obtener el directorio temporal del sistema
+
 if (!fs.existsSync(TMP_DIR)) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 }
@@ -32,7 +34,7 @@ export default {
       const wait = cooldowns.get(userId) - Date.now();
       if (wait > 0) {
         return sock.sendMessage(from, {
-          text: `⏳ Espera ${Math.ceil(wait / 1000)}s`
+          text: `⏳ Espera ${Math.ceil(wait / 1000)}s`,
         });
       }
     }
@@ -42,7 +44,7 @@ export default {
       if (!args.length) {
         cooldowns.delete(userId);
         return sock.sendMessage(from, {
-          text: "❌ Escribe el nombre o link del video"
+          text: "❌ Escribe el nombre o link del video",
         });
       }
 
@@ -59,7 +61,7 @@ export default {
         if (!search.videos.length) {
           cooldowns.delete(userId);
           return sock.sendMessage(from, {
-            text: "❌ No se encontró el video"
+            text: "❌ No se encontró el video",
           });
         }
 
@@ -72,7 +74,7 @@ export default {
       }
 
       await sock.sendMessage(from, {
-        text: `🎬 *VIDEO*\n📹 ${title}\n⏳ Descargando…`
+        text: `🎬 *VIDEO*\n📹 ${title}\n⏳ Descargando…`,
       });
 
       // 🔥 LLAMADA API
@@ -90,7 +92,7 @@ export default {
           const res = await axios.get(data.result.url, {
             responseType: "stream",
             timeout: 60000,
-            headers: { "User-Agent": "Mozilla/5.0" }
+            headers: { "User-Agent": "Mozilla/5.0" },
           });
 
           const writer = fs.createWriteStream(rawMp4);
@@ -127,7 +129,7 @@ export default {
         {
           video: fs.readFileSync(finalMp4),
           mimetype: "video/mp4",
-          caption: `🎬 ${title}`
+          caption: `🎬 ${title}`,
         },
         msg?.key ? { quoted: msg } : undefined
       );
@@ -137,7 +139,7 @@ export default {
       cooldowns.delete(userId);
 
       await sock.sendMessage(from, {
-        text: "❌ Error al procesar el video"
+        text: "❌ Error al procesar el video",
       });
 
     } finally {
@@ -145,7 +147,9 @@ export default {
       try {
         if (rawMp4 && fs.existsSync(rawMp4)) fs.unlinkSync(rawMp4);
         if (finalMp4 && fs.existsSync(finalMp4)) fs.unlinkSync(finalMp4);
-      } catch {}
+      } catch (err) {
+        console.error("Error al limpiar los archivos temporales:", err);
+      }
     }
-  }
+  },
 };
