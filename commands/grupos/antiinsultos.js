@@ -11,6 +11,7 @@ const MAX_WARNS = 3;
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
+// ---------- helpers JSON ----------
 function safeJsonParse(raw, fallback) {
   try {
     const a = JSON.parse(raw);
@@ -20,7 +21,6 @@ function safeJsonParse(raw, fallback) {
     return fallback;
   }
 }
-
 function readJson(file, fallback) {
   try {
     if (!fs.existsSync(file)) return fallback;
@@ -30,35 +30,45 @@ function readJson(file, fallback) {
     return fallback;
   }
 }
-
 function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-function loadWords() {
-  if (!fs.existsSync(WORDS_FILE)) writeJson(WORDS_FILE, []);
-  const arr = readJson(WORDS_FILE, []);
-  return Array.isArray(arr) ? arr : [];
-}
+// crea archivos si no existen
+if (!fs.existsSync(WORDS_FILE)) writeJson(WORDS_FILE, []);
+if (!fs.existsSync(GROUPS_FILE)) writeJson(GROUPS_FILE, []);
+if (!fs.existsSync(WARNS_FILE)) writeJson(WARNS_FILE, {});
 
-function loadGroupsSet() {
-  const arr = readJson(GROUPS_FILE, []);
-  return new Set(Array.isArray(arr) ? arr : []);
-}
-
-function saveGroupsSet(set) {
-  writeJson(GROUPS_FILE, [...set]);
-}
-
-function loadWarns() {
+// ---------- cache en memoria (más estable) ----------
+let gruposActivos = new Set(Array.isArray(readJson(GROUPS_FILE, [])) ? readJson(GROUPS_FILE, []) : []);
+let warnsCache = (() => {
   const obj = readJson(WARNS_FILE, {});
   return obj && typeof obj === "object" ? obj : {};
+})();
+
+function saveGroups() {
+  writeJson(GROUPS_FILE, [...gruposActivos]);
+}
+function saveWarns() {
+  writeJson(WARNS_FILE, warnsCache);
 }
 
-function saveWarns(obj) {
-  writeJson(WARNS_FILE, obj);
+// ---------- anti-duplicado dentro del comando ----------
+const processedMsgIds = new Map(); // chatId -> Set(msgId)
+function alreadyProcessed(chatId, msgId) {
+  if (!chatId || !msgId) return false;
+  if (!processedMsgIds.has(chatId)) processedMsgIds.set(chatId, new Set());
+  const set = processedMsgIds.get(chatId);
+  if (set.has(msgId)) return true;
+  set.add(msgId);
+  if (set.size > 400) {
+    const first = set.values().next().value;
+    set.delete(first);
+  }
+  return false;
 }
 
+// ---------- texto ----------
 function normalizeText(text) {
   return (text || "")
     .toLowerCase()
@@ -80,15 +90,22 @@ function extractText(message) {
   );
 }
 
+function loadWords() {
+  const arr = readJson(WORDS_FILE, []);
+  return Array.isArray(arr) ? arr : [];
+}
+
 function findBadWord(normalizedText, words) {
   const tokens = new Set(normalizedText.split(" ").filter(Boolean));
 
+  // token exacto
   for (const w of words) {
     const ww = normalizeText(w);
     if (!ww) continue;
     if (tokens.has(ww)) return w;
   }
 
+  // frase compuesta
   for (const w of words) {
     const ww = normalizeText(w);
     if (!ww) continue;
@@ -101,8 +118,6 @@ function findBadWord(normalizedText, words) {
 function onOff(v) {
   return v ? "ON ✅" : "OFF ❌";
 }
-
-let gruposActivos = loadGroupsSet();
 
 export default {
   command: ["antiinsultos", "antitoxicos"],
@@ -134,13 +149,13 @@ export default {
 
     if (sub === "on") {
       gruposActivos.add(from);
-      saveGroupsSet(gruposActivos);
+      saveGroups();
       return sock.sendMessage(from, { text: "✅ Anti-insultos activado.", ...global.channelInfo }, { quoted: msg });
     }
 
     if (sub === "off") {
       gruposActivos.delete(from);
-      saveGroupsSet(gruposActivos);
+      saveGroups();
       return sock.sendMessage(from, { text: "✅ Anti-insultos desactivado.", ...global.channelInfo }, { quoted: msg });
     }
 
@@ -151,9 +166,14 @@ export default {
     if (!esGrupo) return;
     if (!gruposActivos.has(from)) return;
 
+    // No castigar admins/owner
     if (esAdmin || esOwner) return;
 
-    const sender = msg.key.participant;
+    // ✅ anti-duplicado por ID del mensaje (arregla lo de 3 advertencias por 1 mensaje)
+    const msgId = msg.key?.id;
+    if (alreadyProcessed(from, msgId)) return;
+
+    const sender = msg.key?.participant || from;
     if (!sender) return;
 
     const textRaw = extractText(msg.message);
@@ -168,44 +188,60 @@ export default {
     const bad = findBadWord(normalized, words);
     if (!bad) return;
 
+    // borrar el mensaje (si puede)
     try {
       await sock.sendMessage(from, { delete: msg.key, ...global.channelInfo });
     } catch {}
 
-    const warns = loadWarns();
-    if (!warns[from]) warns[from] = {};
-    const current = Number(warns[from][sender] || 0) + 1;
-    warns[from][sender] = current;
-    saveWarns(warns);
+    // sumar warn (persistente)
+    if (!warnsCache[from]) warnsCache[from] = {};
+    const prev = Number(warnsCache[from][sender] || 0);
+    const current = prev + 1;
 
+    warnsCache[from][sender] = current;
+    saveWarns();
+
+    // llegó a 3
     if (current >= MAX_WARNS) {
+      let kicked = false;
       try {
         await sock.groupParticipantsUpdate(from, [sender], "remove");
-        await sock.sendMessage(from, {
-          text:
-            `🚫 *ANTI-INSULTOS*\n` +
-            `@${sender.split("@")[0]} llegó a *${current}/${MAX_WARNS}* advertencias.\n` +
-            `✅ Fue expulsado del grupo.`,
-          mentions: [sender],
-          ...global.channelInfo
-        });
+        kicked = true;
       } catch {
-        await sock.sendMessage(from, {
+        kicked = false;
+      }
+
+      if (kicked) {
+        // ✅ IMPORTANTE: borrar del JSON (para que si vuelve, empiece en 0)
+        if (warnsCache[from]) {
+          delete warnsCache[from][sender]; // lo borra totalmente
+          if (Object.keys(warnsCache[from]).length === 0) delete warnsCache[from]; // limpia grupo vacío
+        }
+        saveWarns();
+
+        return sock.sendMessage(from, {
           text:
             `🚫 *ANTI-INSULTOS*\n` +
-            `@${sender.split("@")[0]} llegó a *${current}/${MAX_WARNS}* advertencias.\n` +
-            `⚠️ No pude expulsar (¿bot sin admin?).`,
+            `@${sender.split("@")[0]} llegó a *${MAX_WARNS}/${MAX_WARNS}* advertencias.\n` +
+            `✅ Fue expulsado del grupo.`,
           mentions: [sender],
           ...global.channelInfo
         });
       }
 
-      warns[from][sender] = 0;
-      saveWarns(warns);
-      return;
+      // Si NO pudo expulsar, NO borramos: se queda en 3 para intentar de nuevo
+      return sock.sendMessage(from, {
+        text:
+          `🚫 *ANTI-INSULTOS*\n` +
+          `@${sender.split("@")[0]} llegó a *${MAX_WARNS}/${MAX_WARNS}* advertencias.\n` +
+          `⚠️ No pude expulsar (¿bot sin admin?).`,
+        mentions: [sender],
+        ...global.channelInfo
+      });
     }
 
-    await sock.sendMessage(from, {
+    // advertencia normal
+    return sock.sendMessage(from, {
       text:
         `⚠️ *ANTI-INSULTOS*\n` +
         `@${sender.split("@")[0]} cuidado con el lenguaje.\n` +
