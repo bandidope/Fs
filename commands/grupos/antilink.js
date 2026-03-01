@@ -1,5 +1,25 @@
-// Memoria temporal (se reinicia al apagar bot)
-const gruposProtegidos = new Set();
+import fs from "fs";
+import path from "path";
+
+const DB_DIR = path.join(process.cwd(), "database");
+const archivo = path.join(DB_DIR, "antilink.json");
+
+let gruposProtegidos = new Set();
+
+if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+
+if (fs.existsSync(archivo)) {
+  try {
+    const raw = fs.readFileSync(archivo, "utf-8");
+    const parsed = JSON.parse(raw);
+    const data = typeof parsed === "string" ? JSON.parse(parsed) : parsed; // por si quedó "[]"
+    gruposProtegidos = new Set(Array.isArray(data) ? data : []);
+  } catch {
+    gruposProtegidos = new Set();
+  }
+}
+
+const guardar = () => fs.writeFileSync(archivo, JSON.stringify([...gruposProtegidos], null, 2));
 
 export default {
   name: "antilink",
@@ -8,16 +28,13 @@ export default {
   adminOnly: true,
   category: "grupo",
 
-  async run({ sock, from, args, m, msg }) {
-    const quoted = (m?.key || msg?.key) ? { quoted: (m || msg) } : undefined;
+  async run({ sock, from, args, msg }) {
+    const quoted = msg?.key ? { quoted: msg } : undefined;
 
     if (!args[0]) {
-      return await sock.sendMessage(
+      return sock.sendMessage(
         from,
-        {
-          text: "⚙️ Uso:\n\n• !antilink on\n• !antilink off",
-          ...global.channelInfo
-        },
+        { text: "⚙️ Uso:\n\n• .antilink on\n• .antilink off", ...global.channelInfo },
         quoted
       );
     }
@@ -26,38 +43,25 @@ export default {
 
     if (opcion === "on") {
       gruposProtegidos.add(from);
-
-      return await sock.sendMessage(
+      guardar();
+      return sock.sendMessage(
         from,
-        {
-          text: "🛡 Anti-link activado.\nLos enlaces serán eliminados y el usuario expulsado.",
-          ...global.channelInfo
-        },
+        { text: "🛡 Anti-link activado.\nLinks serán eliminados y el usuario expulsado.", ...global.channelInfo },
         quoted
       );
     }
 
     if (opcion === "off") {
       gruposProtegidos.delete(from);
-
-      return await sock.sendMessage(
+      guardar();
+      return sock.sendMessage(
         from,
-        {
-          text: "✅ Anti-link desactivado.",
-          ...global.channelInfo
-        },
+        { text: "✅ Anti-link desactivado.", ...global.channelInfo },
         quoted
       );
     }
 
-    return await sock.sendMessage(
-      from,
-      {
-        text: "❌ Opción inválida. Usa on o off.",
-        ...global.channelInfo
-      },
-      quoted
-    );
+    return sock.sendMessage(from, { text: "❌ Opción inválida. Usa on/off.", ...global.channelInfo }, quoted);
   },
 
   async onMessage({ sock, msg, from, esGrupo, esAdmin, esOwner }) {
@@ -78,27 +82,14 @@ export default {
     const sender = msg.key.participant;
     if (!sender) return;
 
-    // No expulsar admins ni owner
     if (esAdmin || esOwner) return;
 
     try {
-      // 🔥 1. BORRAR MENSAJE
-      await sock.sendMessage(from, {
-        delete: msg.key,
-        ...global.channelInfo
-      });
-
-      // 🔥 2. EXPULSAR USUARIO
+      await sock.sendMessage(from, { delete: msg.key, ...global.channelInfo });
       await sock.groupParticipantsUpdate(from, [sender], "remove");
-
-      // 🔥 3. MENSAJE DE AVISO
-      await sock.sendMessage(from, {
-        text: "🚫 Enlace eliminado.\nUsuario expulsado automáticamente.",
-        ...global.channelInfo
-      });
-
+      await sock.sendMessage(from, { text: "🚫 Enlace eliminado.\nUsuario expulsado automáticamente.", ...global.channelInfo });
     } catch (e) {
-      console.log("Error antilink:", e.message);
+      console.log("Error antilink:", e?.message || e);
     }
   }
 };
