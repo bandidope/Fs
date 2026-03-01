@@ -15,6 +15,18 @@ if (!fs.existsSync(TMP_DIR)) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 }
 
+function safeFileName(name) {
+  return String(name || "video")
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+}
+
+// Límites conservadores (ajusta si quieres)
+const MAX_VIDEO_BYTES = 64 * 1024 * 1024; // 64 MB como video
+const MAX_DOC_BYTES = 100 * 1024 * 1024; // 100 MB como documento
+
 export default {
   command: ["ytmp4"],
   category: "descarga",
@@ -66,9 +78,7 @@ export default {
         }
 
         videoUrl = search.videos[0].url;
-        title = search.videos[0].title
-          .replace(/[\\/:*?"<>|]/g, "")
-          .slice(0, 60);
+        title = safeFileName(search.videos[0].title);
       } else {
         videoUrl = query;
       }
@@ -124,25 +134,49 @@ export default {
         );
       });
 
-      // 📤 ENVIAR
-      await sock.sendMessage(
-        from,
-        {
-          video: fs.readFileSync(finalMp4),
-          mimetype: "video/mp4",
-          caption: `🎬 ${title}`,
-          ...global.channelInfo
-        },
-        msg?.key ? { quoted: msg } : undefined
-      );
+      // ✅ Control de tamaño (evita crasheos / límites de WA)
+      const size = fs.existsSync(finalMp4) ? fs.statSync(finalMp4).size : 0;
+      if (!size || size < 300000) throw new Error("Archivo final inválido");
+
+      if (size > MAX_DOC_BYTES) {
+        throw new Error("Archivo demasiado grande");
+      }
+
+      // 📤 ENVIAR (sin leer el archivo completo a RAM)
+      // Si es grande, lo mandamos como documento
+      const quoted = msg?.key ? { quoted: msg } : undefined;
+      if (size <= MAX_VIDEO_BYTES) {
+        await sock.sendMessage(
+          from,
+          {
+            video: { url: finalMp4 },
+            mimetype: "video/mp4",
+            caption: `🎬 ${title}`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      } else {
+        await sock.sendMessage(
+          from,
+          {
+            document: { url: finalMp4 },
+            mimetype: "video/mp4",
+            fileName: `${title}.mp4`,
+            caption: `📄 Video muy pesado para enviar como video. Te lo envío como documento.\n🎬 ${title}`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
 
     } catch (err) {
       console.error("YTMP4 ERROR:", err.message);
       cooldowns.delete(userId);
 
       await sock.sendMessage(from, {
-        text: "❌ Error al procesar el video",
-        ...global.channelInfo
+        text: "❌ Error al procesar el video (puede ser enlace inválido, API caída o video demasiado pesado)",
+        ...global.channelInfo,
       });
 
     } finally {
