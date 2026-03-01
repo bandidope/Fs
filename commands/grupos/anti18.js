@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 
 const DB_DIR = path.join(process.cwd(), "database");
-
 const WORDS_FILE = path.join(DB_DIR, "adulto18_words.json");
 const GROUPS_FILE = path.join(DB_DIR, "anti18_groups.json");
 const WARNS_FILE = path.join(DB_DIR, "anti18_warns.json");
@@ -11,6 +10,7 @@ const MAX_WARNS = 3;
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
+// ---------- JSON helpers ----------
 function safeJsonParse(raw, fallback) {
   try {
     const a = JSON.parse(raw);
@@ -20,7 +20,6 @@ function safeJsonParse(raw, fallback) {
     return fallback;
   }
 }
-
 function readJson(file, fallback) {
   try {
     if (!fs.existsSync(file)) return fallback;
@@ -30,41 +29,36 @@ function readJson(file, fallback) {
     return fallback;
   }
 }
-
 function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-function loadWords() {
-  if (!fs.existsSync(WORDS_FILE)) writeJson(WORDS_FILE, []);
-  const arr = readJson(WORDS_FILE, []);
-  return Array.isArray(arr) ? arr : [];
-}
+// crea archivos si no existen
+if (!fs.existsSync(WORDS_FILE)) writeJson(WORDS_FILE, []);
+if (!fs.existsSync(GROUPS_FILE)) writeJson(GROUPS_FILE, []);
+if (!fs.existsSync(WARNS_FILE)) writeJson(WARNS_FILE, {});
 
-function loadGroupsSet() {
-  const arr = readJson(GROUPS_FILE, []);
-  return new Set(Array.isArray(arr) ? arr : []);
-}
-
-function saveGroupsSet(set) {
-  writeJson(GROUPS_FILE, [...set]);
-}
-
-function loadWarns() {
+// ---------- cache en memoria ----------
+let gruposActivos = new Set(Array.isArray(readJson(GROUPS_FILE, [])) ? readJson(GROUPS_FILE, []) : []);
+let warnsCache = (() => {
   const obj = readJson(WARNS_FILE, {});
   return obj && typeof obj === "object" ? obj : {};
+})();
+
+function saveGroups() {
+  writeJson(GROUPS_FILE, [...gruposActivos]);
+}
+function saveWarns() {
+  writeJson(WARNS_FILE, warnsCache);
 }
 
-function saveWarns(obj) {
-  writeJson(WARNS_FILE, obj);
-}
-
+// ---------- texto ----------
 function normalizeText(text) {
   return (text || "")
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[\u0300-\u036f]/g, "") // sin tildes
+    .replace(/[^a-z0-9\s]/g, " ")   // sin signos
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -80,29 +74,33 @@ function extractText(message) {
   );
 }
 
+function loadWords() {
+  const arr = readJson(WORDS_FILE, []);
+  return Array.isArray(arr) ? arr : [];
+}
+
 function findBadWord(normalizedText, words) {
   const tokens = new Set(normalizedText.split(" ").filter(Boolean));
 
+  // token exacto
   for (const w of words) {
     const ww = normalizeText(w);
     if (!ww) continue;
     if (tokens.has(ww)) return w;
   }
 
+  // frase compuesta
   for (const w of words) {
     const ww = normalizeText(w);
     if (!ww) continue;
     if (ww.includes(" ") && normalizedText.includes(ww)) return w;
   }
-
   return null;
 }
 
 function onOff(v) {
   return v ? "ON ✅" : "OFF ❌";
 }
-
-let gruposActivos = loadGroupsSet();
 
 export default {
   command: ["anti18", "antiadultos", "antiporno"],
@@ -134,13 +132,13 @@ export default {
 
     if (sub === "on") {
       gruposActivos.add(from);
-      saveGroupsSet(gruposActivos);
+      saveGroups();
       return sock.sendMessage(from, { text: "✅ Anti +18 activado.", ...global.channelInfo }, { quoted: msg });
     }
 
     if (sub === "off") {
       gruposActivos.delete(from);
-      saveGroupsSet(gruposActivos);
+      saveGroups();
       return sock.sendMessage(from, { text: "✅ Anti +18 desactivado.", ...global.channelInfo }, { quoted: msg });
     }
 
@@ -151,10 +149,10 @@ export default {
     if (!esGrupo) return;
     if (!gruposActivos.has(from)) return;
 
-    // No castigar admins/owner
+    // no castigar admins/owner
     if (esAdmin || esOwner) return;
 
-    const sender = msg.key.participant;
+    const sender = msg.key?.participant || msg.participant;
     if (!sender) return;
 
     const textRaw = extractText(msg.message);
@@ -169,25 +167,21 @@ export default {
     const bad = findBadWord(normalized, words);
     if (!bad) return;
 
-    // borrar el mensaje (si se puede)
+    // borrar mensaje si se puede
     try {
       await sock.sendMessage(from, { delete: msg.key, ...global.channelInfo });
     } catch {}
 
-    // sumar warn (persistente)
-    const warns = loadWarns();
-    if (!warns[from]) warns[from] = {};
-
-    const prev = Number(warns[from][sender] || 0);
+    // WARN persistente
+    if (!warnsCache[from]) warnsCache[from] = {};
+    const prev = Number(warnsCache[from][sender] || 0);
     const current = prev + 1;
 
-    warns[from][sender] = current;
-    saveWarns(warns);
+    warnsCache[from][sender] = current;
+    saveWarns();
 
-    // Si llega a 3, intenta expulsar
     if (current >= MAX_WARNS) {
       let kicked = false;
-
       try {
         await sock.groupParticipantsUpdate(from, [sender], "remove");
         kicked = true;
@@ -196,9 +190,9 @@ export default {
       }
 
       if (kicked) {
-        // Solo si expulsó, resetea a 0
-        warns[from][sender] = 0;
-        saveWarns(warns);
+        // solo resetea si expulsó
+        warnsCache[from][sender] = 0;
+        saveWarns();
 
         return sock.sendMessage(from, {
           text:
@@ -208,21 +202,19 @@ export default {
           mentions: [sender],
           ...global.channelInfo
         });
-      } else {
-        // NO reseteamos: se queda en 3 para que sea kick directo la próxima
-        return sock.sendMessage(from, {
-          text:
-            `🚫 *ANTI +18*\n` +
-            `@${sender.split("@")[0]} llegó a *${current}/${MAX_WARNS}* advertencias.\n` +
-            `⚠️ No pude expulsar (¿bot sin admin?).\n` +
-            `📌 El usuario queda marcado en *${MAX_WARNS}/${MAX_WARNS}* y al próximo mensaje se intentará expulsar de nuevo.`,
-          mentions: [sender],
-          ...global.channelInfo
-        });
       }
+
+      // si no pudo expulsar, NO resetea (queda en 3/3)
+      return sock.sendMessage(from, {
+        text:
+          `🚫 *ANTI +18*\n` +
+          `@${sender.split("@")[0]} llegó a *${current}/${MAX_WARNS}* advertencias.\n` +
+          `⚠️ No pude expulsar (¿bot sin admin?).`,
+        mentions: [sender],
+        ...global.channelInfo
+      });
     }
 
-    // Advertencia normal 1/3 o 2/3
     return sock.sendMessage(from, {
       text:
         `⚠️ *ANTI +18*\n` +
