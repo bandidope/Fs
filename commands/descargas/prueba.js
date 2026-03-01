@@ -1,3 +1,4 @@
+
 import fs from "fs";
 import path from "path";
 import axios from "axios";
@@ -12,8 +13,16 @@ const TMP_DIR = path.join(process.cwd(), "tmp");
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const MAX_BYTES = 150 * 1024 * 1024; // 150 MB
 
-const MAX_BYTES = 150 * 1024 * 1024; // ✅ 150 MB
+const RAM_TMP = "/dev/shm";
+const CAN_USE_RAM = (() => {
+  try {
+    return fs.existsSync(RAM_TMP) && fs.statSync(RAM_TMP).isDirectory();
+  } catch {
+    return false;
+  }
+})();
 
 function safeFileName(name) {
   return String(name || "video")
@@ -24,7 +33,6 @@ function safeFileName(name) {
 }
 
 async function headSize(url) {
-  // A veces HEAD está bloqueado; si falla, devolvemos 0 (desconocido)
   try {
     const res = await axios.head(url, {
       timeout: 15000,
@@ -40,37 +48,17 @@ async function headSize(url) {
 }
 
 async function remuxFromUrlToMp4({ inputUrl, outPath }) {
-  // ffmpeg leyendo directo desde URL (permite seek/range)
   const args = [
     "-y",
-    "-loglevel",
-    "error",
-
-    // reconexión para hosts inestables
-    "-reconnect",
-    "1",
-    "-reconnect_streamed",
-    "1",
-    "-reconnect_delay_max",
-    "5",
-
-    "-i",
-    inputUrl,
-
-    // mapeo seguro
-    "-map",
-    "0:v",
-    "-map",
-    "0:a?",
-
-    // WhatsApp friendly
-    "-movflags",
-    "+faststart",
-
-    // remux sin recodificar (rápido)
-    "-c",
-    "copy",
-
+    "-loglevel", "error",
+    "-reconnect", "1",
+    "-reconnect_streamed", "1",
+    "-reconnect_delay_max", "5",
+    "-i", inputUrl,
+    "-map", "0:v",
+    "-map", "0:a?",
+    "-movflags", "+faststart",
+    "-c", "copy",
     outPath,
   ];
 
@@ -107,7 +95,6 @@ export default {
         msg ? { quoted: msg } : undefined
       );
 
-    // cooldown
     const userId = from;
     if (cooldowns.has(userId)) {
       const wait = cooldowns.get(userId) - Date.now();
@@ -125,7 +112,6 @@ export default {
 
       const query = args.join(" ").trim();
 
-      // 1) Resolver URL de YouTube
       let ytUrl = query;
       let title = "YouTube Video";
 
@@ -138,14 +124,10 @@ export default {
         const v = search.videos[0];
         ytUrl = v.url;
         title = safeFileName(v.title);
-      } else {
-        // (sin cambiar tu lógica “es link”, solo lo toma)
-        title = "YouTube Video";
       }
 
       await reply(`🎬 *VIDEO*\n📹 ${title}\n⏳ Buscando link…`);
 
-      // 2) Llamada a NEXEVO (obtiene mp4 directo)
       const api = `${API_URL}?url=${encodeURIComponent(ytUrl)}`;
       const { data } = await axios.get(api, { timeout: 20000 });
 
@@ -153,44 +135,35 @@ export default {
 
       const mp4Remote = data.result.url;
 
-      // 3) Chequeo de tamaño (si el host lo informa)
       const remoteSize = await headSize(mp4Remote);
       if (remoteSize && remoteSize > MAX_BYTES) {
         cooldowns.delete(userId);
-        const mb = (remoteSize / (1024 * 1024)).toFixed(1);
-        return reply(`❌ El video pesa ${mb} MB y supera el límite de 150 MB.`);
+        return reply(`❌ El video pesa ${(remoteSize / 1048576).toFixed(1)} MB y supera 150 MB.`);
       }
 
       await reply(
-        `⏳ Descargando y optimizando…\n` +
-          `📦 Límite: 150 MB\n` +
-          (remoteSize ? `📏 Tamaño detectado: ${(remoteSize / (1024 * 1024)).toFixed(1)} MB` : `📏 Tamaño: desconocido`)
+        `⏳ Descargando y optimizando…\n📦 Límite: 150 MB\n` +
+        (remoteSize ? `📏 Tamaño: ${(remoteSize / 1048576).toFixed(1)} MB` : `📏 Tamaño: desconocido`)
       );
 
-      // 4) Crear SOLO 1 archivo final
-      finalMp4 = path.join(TMP_DIR, `${Date.now()}_${title}.mp4`);
+      // ✅ salida: RAM si existe /dev/shm, si no disco tmp
+      finalMp4 = CAN_USE_RAM
+        ? path.join(RAM_TMP, `${Date.now()}_${title}.mp4`)
+        : path.join(TMP_DIR, `${Date.now()}_${title}.mp4`);
 
-      // 5) Remux/faststart desde URL con reintento
       let ok = false;
       let lastErr = null;
 
       for (let i = 0; i < 2; i++) {
         try {
           await remuxFromUrlToMp4({ inputUrl: mp4Remote, outPath: finalMp4 });
-
-          // Si por alguna razón creció más de 150MB, cortamos
           const localSize = fs.statSync(finalMp4).size;
-          if (localSize > MAX_BYTES) {
-            throw new Error("Archivo final supera 150MB");
-          }
-
+          if (localSize > MAX_BYTES) throw new Error("Archivo final supera 150MB");
           ok = true;
           break;
         } catch (e) {
           lastErr = e;
-          try {
-            if (finalMp4 && fs.existsSync(finalMp4)) fs.unlinkSync(finalMp4);
-          } catch {}
+          try { if (finalMp4 && fs.existsSync(finalMp4)) fs.unlinkSync(finalMp4); } catch {}
           await sleep(1200);
         }
       }
@@ -198,16 +171,13 @@ export default {
       if (!ok) throw lastErr || new Error("Fallo ffmpeg");
 
       const localSize = fs.statSync(finalMp4).size;
-      const localMB = (localSize / (1024 * 1024)).toFixed(1);
-
-      // 6) Enviar sin cargar a RAM
       await sock.sendMessage(
         from,
         {
           video: { url: finalMp4 },
           mimetype: "video/mp4",
           fileName: `${title}.mp4`,
-          caption: `🎬 ${title}\n📦 ${localMB} MB`,
+          caption: `🎬 ${title}\n📦 ${(localSize / 1048576).toFixed(1)} MB`,
           ...global.channelInfo,
         },
         msg ? { quoted: msg } : undefined
@@ -215,22 +185,14 @@ export default {
     } catch (err) {
       console.error("YTMP4 150MB ERROR:", err?.message || err);
 
-      // Mensajes útiles
       if (String(err?.code) === "ENOSPC" || /no space/i.test(String(err?.message))) {
-        return reply("❌ Sin espacio en el servidor. Borra tmp/ o baja el límite.");
-      }
-
-      if (/supera 150/i.test(String(err?.message))) {
-        return reply("❌ El archivo final supera 150 MB. Prueba otro video o menor calidad.");
+        return reply("❌ Sin espacio (disco o /tmp). Limpia tmp/ o reduce el tamaño.");
       }
 
       await reply("❌ Error al procesar el video (Nexevo/ffmpeg).");
     } finally {
       cooldowns.delete(userId);
-      // limpiar archivo final siempre
-      try {
-        if (finalMp4 && fs.existsSync(finalMp4)) fs.unlinkSync(finalMp4);
-      } catch {}
+      try { if (finalMp4 && fs.existsSync(finalMp4)) fs.unlinkSync(finalMp4); } catch {}
     }
   },
 };
