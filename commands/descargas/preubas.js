@@ -1,46 +1,20 @@
-// ✅ Lista tipo “categorías” (List Message)
-global.enviarLista = async (sock, jid, opts) => {
-  const {
-    title = "Menú",
-    text = "Elige una opción:",
-    footer = settings.botName || "Bot",
-    buttonText = "Ver opciones",
-    sections = [],
-    quoted,
-  } = opts || {};
+export default {
+  command: ["botones", "buttons"],
+  category: "menu",
 
-  return sock.sendMessage(
-    jid,
-    {
-      title,
-      text,
-      footer,
-      buttonText,
-      sections,
-      // ❌ NO pongas ...global.channelInfo aquí
-    },
-    quoted
-  );
-};
+  run: async (ctx) => {
+    const { sock, from, msg } = ctx;
+    const quoted = msg?.key ? { quoted: msg } : undefined;
 
-// ✅ Botones quick reply
-global.enviarBotones = async (sock, jid, opts) => {
-  const {
-    text = "Elige:",
-    footer = settings.botName || "Bot",
-    buttons = [],
-    quoted,
-  } = opts || {};
-
-  return sock.sendMessage(
-    jid,
-    {
-      text,
-      footer,
-      buttons,
-      headerType: 1,
-      // ❌ NO pongas ...global.channelInfo aquí
-    },
-    quoted
-  );
+    return global.enviarBotones(sock, from, {
+      text: "✅ Botones de prueba:",
+      footer: "DVYER BOT",
+      buttons: [
+        { buttonId: ".menu", buttonText: { displayText: "📂 Menú" }, type: 1 },
+        { buttonId: ".ping", buttonText: { displayText: "📌 Ping" }, type: 1 },
+        { buttonId: ".consola 30", buttonText: { displayText: "🧾 Consola" }, type: 1 }
+      ],
+      quoted,
+    });
+  },
 };
