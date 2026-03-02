@@ -5,11 +5,12 @@ const API_URL = "https://nexevo-api.vercel.app/download/tiktok";
 const COOLDOWN_TIME = 10 * 1000;
 const cooldowns = new Map();
 
-const LINE = "━━━━━━━━━━━━━━━━━━━━";
+const BORDER = "⭐════════════════════════⭐";
+const LINE = "❒════════════════════════";
 
 // ================= COMANDO =================
 export default {
-  command: ["tiktok"],
+  command: ["tiktok", "tt", "tk"],
   category: "descarga",
 
   run: async ({ sock, from, args, settings, m, msg }) => {
@@ -17,196 +18,88 @@ export default {
     const userId = from;
     const BOT_NAME = settings?.botName || "DVYER";
 
-    // 🔒 COOLDOWN
+    // 🔒 SISTEMA DE COOLDOWN
     if (cooldowns.has(userId)) {
       const wait = cooldowns.get(userId) - Date.now();
       if (wait > 0) {
-        return sock.sendMessage(
-          from,
-          {
-            text: `⏳ Espera *${Math.ceil(wait / 1000)}s* antes de usar el comando`,
-            ...global.channelInfo
-          },
-          quoted
-        );
+        return sock.sendMessage(from, {
+          text: `⚠️ *¡DESPACIO!* ⏳\nEspera *${Math.ceil(wait / 1000)}s* para volver a usar este comando.`
+        }, quoted);
       }
     }
     cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
     try {
-      if (!args.length) {
+      const videoUrl = args[0]?.split("?")[0]?.trim();
+
+      // 🛑 VALIDACIÓN DE ENTRADA
+      if (!videoUrl || !/tiktok\.com/i.test(videoUrl)) {
         cooldowns.delete(userId);
-        return sock.sendMessage(
-          from,
-          {
-            text:
-`╭─❌ *COMANDO INCORRECTO*
-│ ${LINE}
-│ 📌 Uso:
-│ .tiktok <link>
-│
-│ ✏️ Ejemplo:
-│ .tiktok https://www.tiktok.com/@usuario/video/123456
-╰──────────────`,
-            ...global.channelInfo
-          },
-          quoted
-        );
+        return sock.sendMessage(from, {
+          text: `*┏━━━〔 📥 TIKTOK DOWNLOADER 〕━━━┓*\n\n❌ *ERROR:* Enlace no proporcionado o inválido.\n\n📌 *USO CORRECTO:*\n.tiktok <link>\n\n📝 *EJEMPLO:*\n.tiktok https://vt.tiktok.com/ZSm3Mwydy/\n\n*┗━━━━━━━━━━━━━━━━━━━━┛*`
+        }, quoted);
       }
 
-      let videoUrl = args[0].trim();
+      // 📡 AVISO DE PROCESAMIENTO
+      await sock.sendMessage(from, {
+        text: `⚡ *PROCESANDO VIDEO...*\n_Espere un momento, ${BOT_NAME} está trabajando._`
+      }, { quoted: m });
 
-      // 🔥 Limpiar parámetros extra del link
-      if (videoUrl.includes("?")) videoUrl = videoUrl.split("?")[0];
+      // 🌐 LLAMADA A LA API
+      const { data } = await axios.get(`${API_URL}?url=${encodeURIComponent(videoUrl)}`, {
+        timeout: 30000,
+        headers: { "User-Agent": "Mozilla/5.0" }
+      });
 
-      // ✅ Validar dominios comunes de TikTok
-      const isTikTok =
-        /tiktok\.com/i.test(videoUrl) ||
-        /vm\.tiktok\.com/i.test(videoUrl) ||
-        /vt\.tiktok\.com/i.test(videoUrl);
-
-      if (!isTikTok) {
-        cooldowns.delete(userId);
-        return sock.sendMessage(
-          from,
-          {
-            text:
-`╭─❌ *LINK INVÁLIDO*
-│ ${LINE}
-│ Envía un link válido de TikTok
-╰──────────────`,
-            ...global.channelInfo
-          },
-          quoted
-        );
-      }
-
-      // 📡 Mensaje procesando
-      await sock.sendMessage(
-        from,
-        {
-          text:
-`╭─🎬 *TIKTOK DESCARGADOR*
-│ ${LINE}
-│ ⏳ Procesando video...
-│ 🤖 ${BOT_NAME}
-╰──────────────`,
-          ...global.channelInfo
-        },
-        quoted
-      );
-
-      const api = `${API_URL}?url=${encodeURIComponent(videoUrl)}`;
-
-      let data;
-      try {
-        const response = await axios.get(api, {
-          timeout: 25000,
-          headers: { "User-Agent": "Mozilla/5.0" }
-        });
-        data = response.data;
-      } catch (apiError) {
-        cooldowns.delete(userId);
-        return sock.sendMessage(
-          from,
-          {
-            text:
-`╭─❌ *ERROR API*
-│ ${LINE}
-│ La API respondió con error
-│ Puede estar caída o saturada
-│ Intenta nuevamente en unos segundos
-╰──────────────`,
-            ...global.channelInfo
-          },
-          quoted
-        );
-      }
-
-      // 🔎 Validar estructura real
-      if (!data?.status || data?.result?.code !== 0 || !data?.result?.data) {
-        cooldowns.delete(userId);
-        return sock.sendMessage(
-          from,
-          {
-            text:
-`╭─❌ *SIN RESULTADO*
-│ ${LINE}
-│ No se pudo obtener el video
-│ Intenta con otro enlace
-╰──────────────`,
-            ...global.channelInfo
-          },
-          quoted
-        );
+      // 🔍 VALIDACIÓN DE RESPUESTA
+      if (!data?.status || !data.result?.data) {
+        throw new Error("No se pudo extraer el video. Verifica el link.");
       }
 
       const info = data.result.data;
+      const videoFile = info.hdplay || info.play || info.wmplay;
 
-      const video =
-        info.hdplay ||
-        info.play ||
-        info.wmplay;
+      if (!videoFile) throw new Error("No se encontró un archivo de video reproducible.");
 
-      if (!video) {
-        cooldowns.delete(userId);
-        return sock.sendMessage(
-          from,
-          {
-            text:
-`╭─❌ *VIDEO NO DISPONIBLE*
-│ ${LINE}
-│ La API no devolvió enlace válido
-╰──────────────`,
-            ...global.channelInfo
-          },
-          quoted
-        );
-      }
+      // ✨ DISEÑO DE CAPTION (ESTADÍSTICAS)
+      const caption = `
+${BORDER}
+      🎬 *TIKTOK DOWNLOAD*
+${BORDER}
 
-      const title = (info.title || "Video TikTok").toString().slice(0, 80);
+📝 *TÍTULO:* ${info.title ? info.title.slice(0, 100) + "..." : "Sin descripción"}
+👤 *AUTOR:* ${info.author?.nickname || "TikTok User"}
+⏱️ *DURACIÓN:* ${info.duration || 0} segundos
 
-      // 🎬 Enviar video
-      await sock.sendMessage(
-        from,
-        {
-          video: { url: video },
-          caption:
-`╭─🎬 *VIDEO LISTO*
-│ ${LINE}
-│ 📌 *Título:* ${title}
-│ ⏱️ *Duración:* ${info.duration || 0}s
-│ ❤️ *Likes:* ${info.digg_count || 0}
-│ 💬 *Comentarios:* ${info.comment_count || 0}
-│ 🔁 *Compartidos:* ${info.share_count || 0}
-│ ▶️ *Vistas:* ${info.play_count || 0}
-│ 🌍 *Región:* ${info.region || "N/A"}
-│
-│ ⚡ Calidad automática
-│ 🤖 ${BOT_NAME}
-╰──────────────`,
-          ...global.channelInfo
-        },
-        quoted
-      );
+📈 *ESTADÍSTICAS:*
+💬 Comentarios: ${info.comment_count?.toLocaleString() || 0}
+❤️ Likes: ${info.digg_count?.toLocaleString() || 0}
+🔁 Compartidos: ${info.share_count?.toLocaleString() || 0}
+▶️ Vistas: ${info.play_count?.toLocaleString() || 0}
+
+${LINE}
+🤖 *Bot:* ${BOT_NAME}
+${BORDER}`.trim();
+
+      // 🎬 ENVÍO DEL VIDEO
+      await sock.sendMessage(from, {
+        video: { url: videoFile },
+        caption: caption,
+        mimetype: "video/mp4",
+        fileName: `tiktok_${info.id}.mp4`
+      }, quoted);
 
     } catch (err) {
-      console.error("❌ TIKTOK GENERAL ERROR:", err?.message || err);
+      console.error("❌ ERROR EN TIKTOK:", err.message);
       cooldowns.delete(userId);
 
-      await sock.sendMessage(
-        from,
-        {
-          text:
-`╭─❌ *ERROR GENERAL*
-│ ${LINE}
-│ Ocurrió un problema inesperado
-│ Intenta nuevamente
-╰──────────────`,
-          ...global.channelInfo
-        },
-        quoted
-      );
+      const errorMsg = err.response?.status === 404 
+        ? "El video no existe o es privado." 
+        : "Ocurrió un error al procesar la solicitud. Intenta más tarde.";
+
+      await sock.sendMessage(from, {
+        text: `❌ *ERROR GENERAL*\n\n${LINE}\n${errorMsg}\n${LINE}`
+      }, quoted);
     }
   }
 };
