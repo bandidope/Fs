@@ -1,50 +1,46 @@
-export default {
-  command: ["menu", "help", "ayuda"],
-  category: "menu",
+// ✅ Lista tipo “categorías” (List Message)
+global.enviarLista = async (sock, jid, opts) => {
+  const {
+    title = "Menú",
+    text = "Elige una opción:",
+    footer = settings.botName || "Bot",
+    buttonText = "Ver opciones",
+    sections = [],
+    quoted,
+  } = opts || {};
 
-  run: async (ctx) => {
-    const { sock, from, msg } = ctx;
-    const quoted = msg?.key ? { quoted: msg } : undefined;
+  return sock.sendMessage(
+    jid,
+    {
+      title,
+      text,
+      footer,
+      buttonText,
+      sections,
+      // ❌ NO pongas ...global.channelInfo aquí
+    },
+    quoted
+  );
+};
 
-    // ✅ MENÚ TIPO LISTA (CATEGORÍAS)
-    await global.enviarLista(sock, from, {
-      title: "📂 DVYER MENU",
-      text: "Elige una categoría:",
-      footer: "DVYER BOT",
-      buttonText: "Abrir menú",
-      sections: [
-        {
-          title: "⬇️ Descargas",
-          rows: [
-            {
-              title: "🎬 YouTube MP4",
-              description: "Descargar video",
-              rowId: ".ytmp4 360p despacito"
-            },
-            {
-              title: "🎵 YouTube MP3",
-              description: "Descargar audio",
-              rowId: ".ytmp3 despacito"
-            }
-          ]
-        },
-        {
-          title: "⚙️ Utilidades",
-          rows: [
-            {
-              title: "📌 Ping",
-              description: "Ver estado del bot",
-              rowId: ".ping"
-            },
-            {
-              title: "🧾 Consola (owner)",
-              description: "Ver logs recientes",
-              rowId: ".consola 30"
-            }
-          ]
-        }
-      ],
-      quoted,
-    });
-  },
+// ✅ Botones quick reply
+global.enviarBotones = async (sock, jid, opts) => {
+  const {
+    text = "Elige:",
+    footer = settings.botName || "Bot",
+    buttons = [],
+    quoted,
+  } = opts || {};
+
+  return sock.sendMessage(
+    jid,
+    {
+      text,
+      footer,
+      buttons,
+      headerType: 1,
+      // ❌ NO pongas ...global.channelInfo aquí
+    },
+    quoted
+  );
 };
