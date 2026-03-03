@@ -21,7 +21,7 @@ const API_KEYS = [
 
 let currentKeyIndex = 0;
 const blockedKeys = new Map();
-const RETRY_BLOCKED_AFTER = 30 * 60 * 1000; // 30 min
+const RETRY_BLOCKED_AFTER = 30 * 60 * 1000;
 
 function getCurrentApiKey() {
   const now = Date.now();
@@ -46,7 +46,7 @@ function markKeyAsBlocked(key) {
 }
 
 /* ================================
-   CONFIG ORIGINAL TUYA
+   CONFIG ORIGINAL
 ================================ */
 
 const COOLDOWN_TIME = 15 * 1000;
@@ -133,12 +133,48 @@ function getFreeBytes(dir) {
 }
 
 /* ================================
+   RESOLVE VIDEO INFO (FALTABA)
+================================ */
+
+async function resolveVideoInfo(queryOrUrl) {
+  if (!isHttpUrl(queryOrUrl)) {
+    const search = await yts(queryOrUrl);
+    const first = search?.videos?.[0];
+    if (!first) return null;
+    return {
+      videoUrl: first.url,
+      title: safeFileName(first.title),
+      thumbnail: first.thumbnail || null
+    };
+  }
+
+  const vid = getYoutubeId(queryOrUrl);
+
+  if (vid) {
+    try {
+      const info = await yts({ videoId: vid });
+      if (info) {
+        return {
+          videoUrl: info.url || queryOrUrl,
+          title: safeFileName(info.title),
+          thumbnail: info.thumbnail || null
+        };
+      }
+    } catch {}
+  }
+
+  return {
+    videoUrl: queryOrUrl,
+    title: "video",
+    thumbnail: null
+  };
+}
+
+/* ================================
    FETCH API CON ROTACIÓN
 ================================ */
 
 async function fetchDirectMediaUrl({ videoUrl, quality }) {
-  let lastError = null;
-
   for (let i = 0; i < API_KEYS.length; i++) {
     const apiKey = getCurrentApiKey();
     if (!apiKey) break;
@@ -151,7 +187,7 @@ async function fetchDirectMediaUrl({ videoUrl, quality }) {
       });
 
       if (!data?.status || !data?.result?.url) {
-        throw new Error(data?.message || "API inválida o sin URL directa.");
+        throw new Error(data?.message || "API inválida");
       }
 
       console.log(`✅ API usada: ${apiKey}`);
@@ -164,7 +200,6 @@ async function fetchDirectMediaUrl({ videoUrl, quality }) {
     } catch (err) {
       console.log(`❌ API falló: ${apiKey}`);
       markKeyAsBlocked(apiKey);
-      lastError = err;
     }
   }
 
@@ -172,23 +207,8 @@ async function fetchDirectMediaUrl({ videoUrl, quality }) {
 }
 
 /* ================================
-   TODO TU RESTO DE LÓGICA ORIGINAL
-   (NO MODIFICADA)
+   EXPORT ÚNICO
 ================================ */
-
-export default {
-  command: ["ytmp4"],
-  category: "descarga",
-
-  run: async (ctx) => {
-    // 🔥 EXACTAMENTE TU BLOQUE ORIGINAL COMPLETO
-    // (no lo vuelvo a pegar aquí para no duplicar 400 líneas)
-  },
-};
-
-// ================= RESTO DE TU CÓDIGO =================
-// 🔥 TODO lo demás queda EXACTAMENTE igual
-// (no modifico nada más de tu lógica)
 
 export default {
   command: ["ytmp4"],
@@ -200,20 +220,22 @@ export default {
     const userId = from;
 
     if (locks.has(from)) {
-      return sock.sendMessage(from, { text: "⏳ Ya estoy procesando otro video aquí. Espera un momento.", ...global.channelInfo });
+      return sock.sendMessage(from, {
+        text: "⏳ Ya estoy procesando otro video aquí. Espera un momento.",
+        ...global.channelInfo
+      });
     }
 
     const until = cooldowns.get(userId);
     if (until && until > Date.now()) {
       return sock.sendMessage(from, {
         text: `⏳ Espera ${getCooldownRemaining(until)}s`,
-        ...global.channelInfo,
+        ...global.channelInfo
       });
     }
-    cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
+    cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
     const quoted = msg?.key ? { quoted: msg } : undefined;
-    let outFile = null;
 
     try {
       locks.add(from);
@@ -221,52 +243,42 @@ export default {
 
       if (!args?.length) {
         cooldowns.delete(userId);
-        return sock.sendMessage(from, { text: "❌ Uso: .ytmp4 (360p) <nombre o link>", ...global.channelInfo });
+        return sock.sendMessage(from, {
+          text: "❌ Uso: .ytmp4 (360p) <nombre o link>",
+          ...global.channelInfo
+        });
       }
 
       const quality = parseQuality(args);
       const query = withoutQuality(args).join(" ").trim();
-      if (!query) {
-        cooldowns.delete(userId);
-        return sock.sendMessage(from, { text: "❌ Debes poner un nombre o link.", ...global.channelInfo });
-      }
 
       const meta = await resolveVideoInfo(query);
-      if (!meta) {
-        cooldowns.delete(userId);
-        return sock.sendMessage(from, { text: "❌ No se encontró el video.", ...global.channelInfo });
-      }
+      if (!meta) throw new Error("❌ No se encontró el video.");
 
       let { videoUrl, title, thumbnail } = meta;
 
       if (thumbnail) {
         await sock.sendMessage(from, {
           image: { url: thumbnail },
-          caption: `⬇️ Procesando...\n\n🎬 ${title}\n🎚️ Calidad: ${quality}\n⏳ Espera por favor...`,
-          ...global.channelInfo,
+          caption: `⬇️ Procesando...\n\n🎬 ${title}\n🎚️ Calidad: ${quality}`,
+          ...global.channelInfo
         }, quoted);
       }
 
       const info = await fetchDirectMediaUrl({ videoUrl, quality });
-      title = safeFileName(info.title || title);
 
-      try {
-        await sock.sendMessage(from, {
-          video: { url: info.directUrl },
-          mimetype: "video/mp4",
-          caption: `🎬 ${title}`,
-          ...global.channelInfo,
-        }, quoted);
-        return;
-      } catch {
-        throw new Error("Error enviando video.");
-      }
+      await sock.sendMessage(from, {
+        video: { url: info.directUrl },
+        mimetype: "video/mp4",
+        caption: `🎬 ${safeFileName(info.title)}`,
+        ...global.channelInfo
+      }, quoted);
 
     } catch (err) {
       cooldowns.delete(userId);
       await sock.sendMessage(from, {
-        text: `❌ ${String(err?.message || "Error al procesar el video.")}`,
-        ...global.channelInfo,
+        text: `❌ ${err.message}`,
+        ...global.channelInfo
       });
     } finally {
       locks.delete(from);
