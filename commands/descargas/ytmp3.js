@@ -8,8 +8,8 @@ const API_URL = "https://mayapi.ooguy.com/ytdl";
 
 // 🔁 ROTACIÓN DE API KEYS
 const API_KEYS = [
-  "may-a709a21",
-  "may-d19c45b2",
+  //"may-a709a21",
+  //"may-d19c45b2",
   "may-08988cc0",
   "may-ddfb7860",
   "may-ea9fd2d2",
