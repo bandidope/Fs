@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 import axios from "axios";
 import yts from "yt-search";
-import { execSync } from "child_process";
 
 const API_URL = "https://mayapi.ooguy.com/ytdl";
 
@@ -62,13 +61,10 @@ function withoutQuality(args) {
 function cleanupTmp() {
   try {
     const now = Date.now();
-
     for (const file of fs.readdirSync(TMP_DIR)) {
       const p = path.join(TMP_DIR, file);
-
       try {
         const st = fs.statSync(p);
-
         if (st.isFile() && now - st.mtimeMs > CLEANUP_MAX_AGE_MS) {
           fs.unlinkSync(p);
         }
@@ -122,7 +118,6 @@ async function resolveVideoInfo(query) {
   if (!isHttpUrl(query)) {
 
     const search = await yts(query);
-
     const first = search?.videos?.[0];
 
     if (!first) return null;
@@ -136,7 +131,6 @@ async function resolveVideoInfo(query) {
   }
 
   const search = await yts(query);
-
   const first = search?.videos?.[0];
 
   return {
@@ -145,27 +139,6 @@ async function resolveVideoInfo(query) {
     thumbnail: first?.thumbnail || null
   };
 
-}
-
-async function headContentLength(url) {
-  try {
-
-    const r = await axios.head(url,{
-      timeout:15000,
-      maxRedirects:5,
-      headers:{
-        "User-Agent":"Mozilla/5.0",
-        "Referer":"https://www.youtube.com/"
-      }
-    });
-
-    const len = Number(r.headers["content-length"]);
-
-    return Number.isFinite(len) ? len : null;
-
-  } catch {
-    return null;
-  }
 }
 
 async function trySendByUrl(sock, from, quoted, directUrl, title) {
@@ -315,9 +288,8 @@ export default {
 
       title = safeFileName(info.title || title);
 
-      const len = await headContentLength(info.directUrl);
-
-      if(len && len < MAX_VIDEO_BYTES){
+      /* 🔥 SOLUCIÓN AL ERROR 403 */
+      if(info.directUrl.includes("googlevideo.com")){
 
         const sent = await trySendByUrl(sock,from,quoted,info.directUrl,title);
 
