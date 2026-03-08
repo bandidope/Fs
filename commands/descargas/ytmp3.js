@@ -1,8 +1,7 @@
 import axios from "axios"
 import yts from "yt-search"
 
-const API = "https://0f66da8bd81e5d32-201-230-121-168.serveousercontent.com/ytmp3"
-
+const API = "https://nexevo.onrender.com/ytmp3"
 const channelInfo = global.channelInfo || {}
 
 function safeFileName(name){
@@ -31,7 +30,6 @@ text:"❌ Uso: .play canción\nEjemplo:\n.play ozuna",
 try{
 
 const query = args.join(" ")
-
 const search = await yts(query)
 const video = search.videos[0]
 
@@ -48,34 +46,14 @@ caption:`🎵 *${video.title}*\n⏱️ ${video.timestamp}\n\n⬇️ Descargando 
 ...channelInfo
 },{quoted:msg})
 
-const apiUrl = `${API}?url=${encodeURIComponent(video.url)}`
+const {data} = await axios.get(`${API}?url=${encodeURIComponent(video.url)}`)
 
-const {data} = await axios.get(apiUrl,{timeout:20000})
-
-if(!data || !data.download){
+if(!data || !data.url){
 throw new Error("API sin audio")
 }
 
-const audioUrl = data.download
-
-// descargar audio
-const audioRes = await axios({
-method:"GET",
-url:audioUrl,
-responseType:"arraybuffer",
-headers:{
-"User-Agent":"Mozilla/5.0",
-"Referer":"https://www.youtube.com/"
-},
-timeout:30000
-})
-
-if(!audioRes.data || audioRes.data.length === 0){
-throw new Error("Audio vacío")
-}
-
 await sock.sendMessage(from,{
-audio: Buffer.from(audioRes.data),
+audio:{ url: data.url },
 mimetype:"audio/ogg; codecs=opus",
 fileName: safeFileName(video.title)+".ogg",
 ...channelInfo
@@ -83,7 +61,7 @@ fileName: safeFileName(video.title)+".ogg",
 
 }catch(err){
 
-console.log("[PLAY ERROR]", err?.response?.data || err.message)
+console.log("[PLAY ERROR]", err)
 
 await sock.sendMessage(from,{
 text:"❌ Error descargando música",
