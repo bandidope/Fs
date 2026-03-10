@@ -1,5 +1,8 @@
+import fs from "fs";
+import path from "path";
 import axios from "axios";
 import yts from "yt-search";
+import { exec } from "child_process";
 
 const API_BASE = "https://dv-yer-api.online";
 const API_AUDIO_URL = `${API_BASE}/ytmp3`;
@@ -7,7 +10,13 @@ const API_SEARCH_URL = `${API_BASE}/ytsearch`;
 
 const COOLDOWN_TIME = 10 * 1000;
 const AUDIO_QUALITY = "128k";
+const TMP_DIR = path.join(process.cwd(), "tmp");
+const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 const cooldowns = new Map();
+
+if (!fs.existsSync(TMP_DIR)) {
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+}
 
 function safeFileName(name) {
   return (
@@ -30,24 +39,17 @@ function getCooldownRemaining(untilMs) {
 function getYoutubeId(url) {
   try {
     const u = new URL(url);
-
-    if (u.hostname.includes("youtu.be")) {
-      return u.pathname.replace("/", "").trim();
-    }
+    if (u.hostname.includes("youtu.be")) return u.pathname.replace("/", "").trim();
 
     const v = u.searchParams.get("v");
     if (v) return v.trim();
 
     const parts = u.pathname.split("/").filter(Boolean);
     const shortsIndex = parts.indexOf("shorts");
-    if (shortsIndex >= 0 && parts[shortsIndex + 1]) {
-      return parts[shortsIndex + 1].trim();
-    }
+    if (shortsIndex >= 0 && parts[shortsIndex + 1]) return parts[shortsIndex + 1].trim();
 
     const embedIndex = parts.indexOf("embed");
-    if (embedIndex >= 0 && parts[embedIndex + 1]) {
-      return parts[embedIndex + 1].trim();
-    }
+    if (embedIndex >= 0 && parts[embedIndex + 1]) return parts[embedIndex + 1].trim();
 
     return null;
   } catch {
@@ -181,36 +183,13 @@ async function requestAudioLink(videoUrl) {
   throw new Error(lastError);
 }
 
-async function sendAudioByUrl(sock, from, quoted, { directUrl, title }) {
-  try {
-    await sock.sendMessage(
-      from,
-      {
-        audio: { url: directUrl },
-        mimetype: "audio/mp4",
-        ptt: false,
-        fileName: `${title}.m4a`,
-        ...global.channelInfo,
-      },
-      quoted
+async function convertToMp3(inputUrl, outputPath) {
+  return new Promise((resolve, reject) => {
+    exec(
+      `ffmpeg -y -i "${inputUrl}" -vn -c:a libmp3lame -b:a 128k -ar 44100 -threads 2 -loglevel error "${outputPath}"`,
+      (err) => (err ? reject(err) : resolve())
     );
-    return "audio";
-  } catch (e1) {
-    console.error("send audio by url failed:", e1?.message || e1);
-
-    await sock.sendMessage(
-      from,
-      {
-        document: { url: directUrl },
-        mimetype: "audio/mp4",
-        fileName: `${title}.m4a`,
-        caption: `🎵 ${title}`,
-        ...global.channelInfo,
-      },
-      quoted
-    );
-    return "document";
-  }
+  });
 }
 
 export default {
@@ -222,6 +201,7 @@ export default {
     const msg = ctx.m || ctx.msg || null;
     const userId = from;
     const quoted = msg?.key ? { quoted: msg } : undefined;
+    let finalMp3;
 
     const until = cooldowns.get(userId);
     if (until && until > Date.now()) {
@@ -273,10 +253,30 @@ export default {
       const info = await requestAudioLink(videoUrl);
       title = safeFileName(info.title || title);
 
-      await sendAudioByUrl(sock, from, quoted, {
-        directUrl: info.directUrl,
-        title,
-      });
+      finalMp3 = path.join(TMP_DIR, `${Date.now()}.mp3`);
+      await convertToMp3(info.directUrl, finalMp3);
+
+      const size = fs.existsSync(finalMp3) ? fs.statSync(finalMp3).size : 0;
+
+      if (!size || size < 100000) {
+        throw new Error("Audio inválido");
+      }
+
+      if (size > MAX_AUDIO_BYTES) {
+        throw new Error("Audio demasiado grande");
+      }
+
+      await sock.sendMessage(
+        from,
+        {
+          audio: { url: finalMp3 },
+          mimetype: "audio/mpeg",
+          ptt: false,
+          fileName: `${title}.mp3`,
+          ...global.channelInfo,
+        },
+        quoted
+      );
     } catch (err) {
       console.error("YTMP3 ERROR:", err?.message || err);
       cooldowns.delete(userId);
@@ -285,6 +285,12 @@ export default {
         text: `❌ ${String(err?.message || "Error al procesar la música.")}`,
         ...global.channelInfo,
       });
+    } finally {
+      try {
+        if (finalMp3 && fs.existsSync(finalMp3)) {
+          fs.unlinkSync(finalMp3);
+        }
+      } catch {}
     }
   },
 };
