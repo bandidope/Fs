@@ -2,10 +2,12 @@ import axios from "axios";
 import yts from "yt-search";
 
 const API_BASE = "https://dv-yer-api.online";
-const API_URL = `${API_BASE}/ytdl`;
+const API_VIDEO_URL = `${API_BASE}/ytmp4`;
+const API_SEARCH_URL = `${API_BASE}/ytsearch`;
 
 const COOLDOWN_TIME = 15 * 1000;
 const DEFAULT_QUALITY = "360p";
+const FALLBACK_QUALITIES = ["360p", "240p", "144p", "480p", "720p"];
 const cooldowns = new Map();
 
 function safeFileName(name) {
@@ -41,11 +43,14 @@ function getYoutubeId(url) {
     if (u.hostname.includes("youtu.be")) return u.pathname.replace("/", "").trim();
     const v = u.searchParams.get("v");
     if (v) return v.trim();
+
     const parts = u.pathname.split("/").filter(Boolean);
     const idxShorts = parts.indexOf("shorts");
     if (idxShorts >= 0 && parts[idxShorts + 1]) return parts[idxShorts + 1].trim();
+
     const idxEmbed = parts.indexOf("embed");
     if (idxEmbed >= 0 && parts[idxEmbed + 1]) return parts[idxEmbed + 1].trim();
+
     return null;
   } catch {
     return null;
@@ -59,89 +64,72 @@ function toAbsoluteUrl(urlLike) {
 }
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function pickUrl(data) {
+function pickBestDownloadUrl(data) {
   return (
+    data?.download_url_full ||
+    data?.download_url ||
+    data?.url ||
     data?.result?.download_url_full ||
     data?.result?.download_url ||
     data?.result?.url ||
-    data?.url ||
     ""
   );
 }
 
-async function requestVideoLink(url, quality, mode = "ytdl") {
-  if (mode === "ytmp4link") {
-    return axios.get(`${API_BASE}/ytmp4/link`, {
-      timeout: 30000,
-      params: { url, quality },
-      validateStatus: (s) => s >= 200 && s < 500,
-    });
-  }
-
-  return axios.get(API_URL, {
-    timeout: 30000,
-    params: {
-      type: "video",
-      url,
-      quality,
-      safe: true,
-    },
-    validateStatus: (s) => s >= 200 && s < 500,
-  });
+function pickTitle(data, fallback = "video") {
+  return data?.title || data?.result?.title || fallback;
 }
 
-// ===== API (URL directa con reintentos + fallback) =====
-async function fetchDirectMediaUrl({ videoUrl, quality }) {
-  const qualities = [quality, "360p", "480p", "240p", "144p", "best"]
-    .filter(Boolean)
-    .map((q) => String(q).toLowerCase())
-    .filter((q, i, arr) => arr.indexOf(q) === i);
+function extractApiError(data, status) {
+  return (
+    data?.detail ||
+    data?.error?.message ||
+    data?.message ||
+    (status ? `HTTP ${status}` : "Error de API")
+  );
+}
 
-  const strategies = ["ytdl", "ytmp4link"];
-  let lastError = "No se pudo obtener URL directa.";
+async function apiGet(url, params, timeout = 45000) {
+  const response = await axios.get(url, {
+    timeout,
+    params,
+    validateStatus: () => true,
+  });
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    for (const q of qualities) {
-      for (const mode of strategies) {
-        try {
-          const { data } = await requestVideoLink(videoUrl, q, mode);
+  const data = response.data;
 
-          if (data?.status === false) {
-            lastError = data?.error?.message || data?.message || "status false";
-            continue;
-          }
-
-          const candidate = pickUrl(data);
-          if (!candidate) {
-            lastError = "Respuesta sin URL de descarga.";
-            continue;
-          }
-
-          return {
-            title: data?.result?.title || data?.title || "video",
-            directUrl: toAbsoluteUrl(candidate),
-          };
-        } catch (e) {
-          lastError = e?.message || "request failed";
-        }
-      }
-    }
-
-    await sleep(900 * attempt);
+  if (response.status >= 400) {
+    throw new Error(extractApiError(data, response.status));
   }
 
-  throw new Error(lastError);
+  if (data?.ok === false || data?.status === false) {
+    throw new Error(extractApiError(data, response.status));
+  }
+
+  return data;
 }
 
 async function resolveVideoInfo(queryOrUrl) {
-  // Si no es URL => búsqueda por texto
   if (!isHttpUrl(queryOrUrl)) {
+    try {
+      const data = await apiGet(API_SEARCH_URL, { q: queryOrUrl, limit: 1 }, 25000);
+      const first = data?.results?.[0];
+      if (first?.url) {
+        return {
+          videoUrl: first.url,
+          title: safeFileName(first.title),
+          thumbnail: first.thumbnail || null,
+        };
+      }
+    } catch {}
+
     const search = await yts(queryOrUrl);
     const first = search?.videos?.[0];
     if (!first) return null;
+
     return {
       videoUrl: first.url,
       title: safeFileName(first.title),
@@ -149,14 +137,13 @@ async function resolveVideoInfo(queryOrUrl) {
     };
   }
 
-  // Si es URL => intenta videoId para metadata más exacta
-  const vid = getYoutubeId(queryOrUrl);
-  if (vid) {
+  const videoId = getYoutubeId(queryOrUrl);
+  if (videoId) {
     try {
-      const info = await yts({ videoId: vid });
-      if (info) {
+      const info = await yts({ videoId });
+      if (info?.url) {
         return {
-          videoUrl: info.url || queryOrUrl,
+          videoUrl: info.url,
           title: safeFileName(info.title),
           thumbnail: info.thumbnail || null,
         };
@@ -164,29 +151,52 @@ async function resolveVideoInfo(queryOrUrl) {
     } catch {}
   }
 
-  // fallback
-  try {
-    const search = await yts(queryOrUrl);
-    const first = search?.videos?.[0];
-    if (first) {
-      return {
-        videoUrl: first.url || queryOrUrl,
-        title: safeFileName(first.title),
-        thumbnail: first.thumbnail || null,
-      };
-    }
-  } catch {}
-
-  return { videoUrl: queryOrUrl, title: "video", thumbnail: null };
+  return {
+    videoUrl: queryOrUrl,
+    title: "video",
+    thumbnail: null,
+  };
 }
 
-/**
- * Intenta enviar por URL como video.
- * Si falla, intenta como documento por URL.
- * (Sin disco => sin ENOSPC)
- */
-async function sendByUrl(sock, from, quoted, { directUrl, title }) {
-  // 1) video
+async function requestVideoLink(videoUrl, requestedQuality) {
+  const qualities = [requestedQuality, ...FALLBACK_QUALITIES]
+    .filter(Boolean)
+    .map((q) => String(q).toLowerCase())
+    .filter((q, i, arr) => arr.indexOf(q) === i);
+
+  let lastError = "No se pudo obtener el video.";
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    for (const quality of qualities) {
+      try {
+        const data = await apiGet(API_VIDEO_URL, {
+          mode: "link",
+          quality,
+          url: videoUrl,
+        });
+
+        const directUrl = toAbsoluteUrl(pickBestDownloadUrl(data));
+        if (!directUrl) {
+          throw new Error("La API no devolvió URL de descarga.");
+        }
+
+        return {
+          title: pickTitle(data, "video"),
+          directUrl,
+          quality,
+        };
+      } catch (error) {
+        lastError = error?.message || "Error desconocido";
+      }
+    }
+
+    await sleep(1200 * attempt);
+  }
+
+  throw new Error(lastError);
+}
+
+async function sendVideoByUrl(sock, from, quoted, { directUrl, title }) {
   try {
     await sock.sendMessage(
       from,
@@ -202,7 +212,6 @@ async function sendByUrl(sock, from, quoted, { directUrl, title }) {
   } catch (e1) {
     console.error("send video by url failed:", e1?.message || e1);
 
-    // 2) documento
     await sock.sendMessage(
       from,
       {
@@ -225,10 +234,9 @@ export default {
   run: async (ctx) => {
     const { sock, from, args } = ctx;
     const msg = ctx.m || ctx.msg || null;
-
     const userId = from;
+    const quoted = msg?.key ? { quoted: msg } : undefined;
 
-    // ===== COOLDOWN =====
     const until = cooldowns.get(userId);
     if (until && until > Date.now()) {
       return sock.sendMessage(from, {
@@ -236,9 +244,8 @@ export default {
         ...global.channelInfo,
       });
     }
-    cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
-    const quoted = msg?.key ? { quoted: msg } : undefined;
+    cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
     try {
       if (!args?.length) {
@@ -249,8 +256,9 @@ export default {
         });
       }
 
-      const quality = parseQuality(args);
+      const requestedQuality = parseQuality(args);
       const query = withoutQuality(args).join(" ").trim();
+
       if (!query) {
         cooldowns.delete(userId);
         return sock.sendMessage(from, {
@@ -259,8 +267,8 @@ export default {
         });
       }
 
-      // ===== Buscar metadata + URL =====
       const meta = await resolveVideoInfo(query);
+
       if (!meta) {
         cooldowns.delete(userId);
         return sock.sendMessage(from, {
@@ -271,45 +279,36 @@ export default {
 
       let { videoUrl, title, thumbnail } = meta;
 
-      // ===== Mensaje previo =====
-      if (thumbnail) {
-        await sock.sendMessage(
-          from,
-          {
-            image: { url: thumbnail },
-            caption: `⬇️ Preparando envío...\n\n🎬 ${title}\n🎚️ Calidad: ${quality}\n⏳ Espera por favor...`,
-            ...global.channelInfo,
-          },
-          quoted
-        );
-      } else {
-        await sock.sendMessage(
-          from,
-          {
-            text: `⬇️ Preparando envío...\n\n🎬 ${title}\n🎚️ Calidad: ${quality}\n⏳ Espera por favor...`,
-            ...global.channelInfo,
-          },
-          quoted
-        );
-      }
+      await sock.sendMessage(
+        from,
+        thumbnail
+          ? {
+              image: { url: thumbnail },
+              caption: `⬇️ Preparando video...\n\n🎬 ${title}\n🎚️ Calidad: ${requestedQuality}`,
+              ...global.channelInfo,
+            }
+          : {
+              text: `⬇️ Preparando video...\n\n🎬 ${title}\n🎚️ Calidad: ${requestedQuality}`,
+              ...global.channelInfo,
+            },
+        quoted
+      );
 
-      // ===== API URL directa =====
-      const info = await fetchDirectMediaUrl({ videoUrl, quality });
+      const info = await requestVideoLink(videoUrl, requestedQuality);
       title = safeFileName(info.title || title);
 
-      // ===== Enviar SIN DISCO =====
-      await sendByUrl(sock, from, quoted, { directUrl: info.directUrl, title });
+      await sendVideoByUrl(sock, from, quoted, {
+        directUrl: info.directUrl,
+        title,
+      });
     } catch (err) {
       console.error("YTMP4 ERROR:", err?.message || err);
       cooldowns.delete(userId);
 
-      const msgErr = String(err?.message || "Error al procesar el video.").trim();
-
       await sock.sendMessage(from, {
-        text: `❌ ${msgErr}`,
+        text: `❌ ${String(err?.message || "Error al procesar el video.")}`,
         ...global.channelInfo,
       });
     }
   },
 };
-
