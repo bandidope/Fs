@@ -1,255 +1,279 @@
 import axios from "axios";
 
-// ================= CONFIG =================
-const COOLDOWN_TIME = 10 * 1000;
+const API_BASE = "https://dv-yer-api.online";
+const API_TIKTOK_URL = `${API_BASE}/ttdlmp4`;
+
+const COOLDOWN_TIME = 15 * 1000;
+const VIDEO_QUALITY = "hd";
+const API_LANG = "es";
+const REQUEST_TIMEOUT = 35000;
+
 const cooldowns = new Map();
 
-const BORDER = "════════════════════════";
-const LINE = "❒════════════════════════";
+function safeFileName(name) {
+  return (
+    String(name || "tiktok")
+      .replace(/[\\/:*?"<>|]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80) || "tiktok"
+  );
+}
 
-const NEXEVO_API = "https://nexevo.onrender.com/download/tiktok?url=";
+function normalizeMp4Name(name) {
+  const clean = safeFileName(String(name || "tiktok").replace(/\.mp4$/i, ""));
+  return `${clean || "tiktok"}.mp4`;
+}
 
-const MAX_MB = 45;
-const MAX_BYTES = MAX_MB * 1024 * 1024;
+function getCooldownRemaining(untilMs) {
+  return Math.max(0, Math.ceil((untilMs - Date.now()) / 1000));
+}
 
-// ================= HELPERS =================
-function normalizeText(str = "") {
-  return String(str).replace(/\s+/g, " ").trim();
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function clip(str = "", max = 90) {
-  const s = normalizeText(str);
-  return s.length > max ? s.slice(0, max - 3) + "..." : s;
+
+function extractApiError(data, status) {
+  return (
+    data?.detail ||
+    data?.error?.message ||
+    data?.message ||
+    (status ? `HTTP ${status}` : "Error de API")
+  );
 }
-function isTikTokUrl(u) {
-  try {
-    const url = new URL(u);
-    const host = url.hostname.toLowerCase();
-    return host.includes("tiktok.com") || host.includes("vm.tiktok.com") || host.includes("vt.tiktok.com");
-  } catch {
-    return false;
-  }
+
+function pickDownloadUrl(data) {
+  return (
+    data?.download_url_full ||
+    data?.download_url ||
+    data?.url ||
+    data?.result?.download_url_full ||
+    data?.result?.download_url ||
+    data?.result?.url ||
+    ""
+  );
 }
-function formatNum(n) {
-  return Number(n || 0).toLocaleString("es-ES");
+
+function extractTextFromMessage(message) {
+  return (
+    message?.text ||
+    message?.caption ||
+    message?.body ||
+    message?.message?.conversation ||
+    message?.message?.extendedTextMessage?.text ||
+    message?.message?.imageMessage?.caption ||
+    message?.message?.videoMessage?.caption ||
+    message?.message?.documentMessage?.caption ||
+    message?.conversation ||
+    message?.extendedTextMessage?.text ||
+    message?.imageMessage?.caption ||
+    message?.videoMessage?.caption ||
+    message?.documentMessage?.caption ||
+    ""
+  );
 }
-function unixToDate(unixSeconds) {
-  try {
-    if (!unixSeconds) return "—";
-    const d = new Date(Number(unixSeconds) * 1000);
-    return d.toLocaleString("es-ES", { hour12: false });
-  } catch {
-    return "—";
-  }
+
+function extractTikTokUrl(text) {
+  const match = String(text || "").match(
+    /https?:\/\/(?:www\.)?(?:tiktok\.com|m\.tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|douyin\.com)\/[^\s]+/i
+  );
+  return match ? match[0].trim() : "";
 }
-async function downloadBinary(url) {
-  const res = await axios.get(url, {
-    responseType: "arraybuffer",
-    timeout: 60000,
-    maxContentLength: MAX_BYTES,
-    maxBodyLength: MAX_BYTES,
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      "Accept": "*/*",
-    },
-    validateStatus: (s) => s >= 200 && s < 400,
+
+function getQuotedMessage(ctx, msg) {
+  return (
+    ctx?.quoted ||
+    msg?.quoted ||
+    msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage ||
+    null
+  );
+}
+
+function resolveTikTokUrl(ctx) {
+  const msg = ctx.m || ctx.msg || null;
+  const directText = Array.isArray(ctx.args) ? ctx.args.join(" ").trim() : "";
+  const quotedMessage = getQuotedMessage(ctx, msg);
+  const quotedText = extractTextFromMessage(quotedMessage);
+
+  return extractTikTokUrl(directText) || extractTikTokUrl(quotedText) || "";
+}
+
+async function apiGet(url, params, timeout = REQUEST_TIMEOUT) {
+  const response = await axios.get(url, {
+    timeout,
+    params,
+    validateStatus: () => true,
   });
 
-  const contentType = String(res.headers?.["content-type"] || "").toLowerCase();
-  const buf = Buffer.from(res.data);
-  return { buf, contentType, size: buf.length };
+  const data = response.data;
+
+  if (response.status >= 400) {
+    throw new Error(extractApiError(data, response.status));
+  }
+
+  if (data?.ok === false || data?.status === false) {
+    throw new Error(extractApiError(data, response.status));
+  }
+
+  return data;
 }
 
-// ================= COMANDO =================
-export default {
-  command: ["tiktok", "tt", "tk"],
-  category: "descarga",
+async function resolveRedirectTarget(url) {
+  let lastError = "No se pudo resolver la redirección final.";
 
-  run: async ({ sock, from, args, settings, m, msg }) => {
-    const quoted = (m?.key || msg?.key) ? { quoted: (m || msg) } : undefined;
-    const channelContext = global.channelInfo || {};
-    const BOT_NAME = settings?.botName || "⺪ArtoriaBoT 乂​";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await axios.get(url, {
+        timeout: REQUEST_TIMEOUT,
+        maxRedirects: 0,
+        validateStatus: () => true,
+      });
 
-    // 🔒 COOLDOWN
-    const userId = from;
-    const now = Date.now();
-    const endsAt = cooldowns.get(userId) || 0;
-    const wait = endsAt - now;
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers?.location;
+        if (location) return location;
+      }
 
-    if (wait > 0) {
-      return sock.sendMessage(
-        from,
-        { text: `⚠️ *¡DESPACIO!* ⏳\nEspera *${Math.ceil(wait / 1000)}s* para volver a usar este comando.`, ...channelContext },
-        quoted
-      );
-    }
-    cooldowns.set(userId, now + COOLDOWN_TIME);
+      if (response.status >= 200 && response.status < 300) {
+        return url;
+      }
 
-    // URL
-    const videoUrl = args.join(" ").trim();
-
-    if (!videoUrl || !isTikTokUrl(videoUrl)) {
-      cooldowns.delete(userId);
-      return sock.sendMessage(
-        from,
-        {
-          text:
-            `*┏━━━〔 📥 TIKTOK DOWNLOADER 〕━━━┓*\n\n` +
-            `❌ *ERROR:* Enlace inválido.\n\n` +
-            `📌 *USO:* .tiktok <link>\n\n` +
-            `*┗━━━━━━━━━━━━━━━━━━━━┛*`,
-          ...channelContext,
-        },
-        quoted
-      );
+      lastError = extractApiError(response.data, response.status);
+    } catch (error) {
+      lastError = error?.message || "redirect failed";
     }
 
-    // ✅ 1 SOLO MENSAJE DE "DESCARGANDO"
+    await sleep(700 * attempt);
+  }
+
+  throw new Error(lastError);
+}
+
+async function requestTikTokLink(videoUrl) {
+  let lastError = "No se pudo obtener el video de TikTok.";
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const data = await apiGet(API_TIKTOK_URL, {
+        mode: "link",
+        quality: VIDEO_QUALITY,
+        lang: API_LANG,
+        url: videoUrl,
+      });
+
+      const redirectUrl = pickDownloadUrl(data);
+      if (!redirectUrl) {
+        throw new Error("La API no devolvió download_url.");
+      }
+
+      const directUrl = await resolveRedirectTarget(redirectUrl);
+      const title = safeFileName(data?.title || data?.result?.title || "tiktok");
+      const fileName = normalizeMp4Name(
+        data?.filename || data?.file_name || title || "tiktok"
+      );
+
+      return {
+        title,
+        fileName,
+        directUrl,
+      };
+    } catch (error) {
+      lastError = error?.message || "Error desconocido";
+      await sleep(900 * attempt);
+    }
+  }
+
+  throw new Error(lastError);
+}
+
+async function sendTikTokVideo(sock, from, quoted, { directUrl, title, fileName }) {
+  try {
     await sock.sendMessage(
       from,
       {
-        text: `⬇️ *DESCARGANDO...*\nEspera un momento, estoy preparando tu TikTok (HD).`,
-        ...channelContext,
+        video: { url: directUrl },
+        mimetype: "video/mp4",
+        fileName,
+        caption: `api dvyer\n\n${title}`,
+        ...global.channelInfo,
       },
-      { quoted: m || msg }
+      quoted
     );
+    return "video";
+  } catch (e1) {
+    console.error("send video by url failed:", e1?.message || e1);
+
+    await sock.sendMessage(
+      from,
+      {
+        document: { url: directUrl },
+        mimetype: "video/mp4",
+        fileName,
+        caption: `api dvyer\n\n${title}`,
+        ...global.channelInfo,
+      },
+      quoted
+    );
+    return "document";
+  }
+}
+
+export default {
+  command: ["tiktok"],
+  category: "descarga",
+
+  run: async (ctx) => {
+    const { sock, from } = ctx;
+    const msg = ctx.m || ctx.msg || null;
+    const quoted = msg?.key ? { quoted: msg } : undefined;
+    const userId = from;
+
+    const until = cooldowns.get(userId);
+    if (until && until > Date.now()) {
+      return sock.sendMessage(from, {
+        text: `⏳ Espera ${getCooldownRemaining(until)}s`,
+        ...global.channelInfo,
+      });
+    }
+
+    cooldowns.set(userId, Date.now() + COOLDOWN_TIME);
 
     try {
-      // 1) API
-      const apiUrl = NEXEVO_API + encodeURIComponent(videoUrl);
-      const { data } = await axios.get(apiUrl, { timeout: 30000, headers: { Accept: "application/json" } });
+      const videoUrl = resolveTikTokUrl(ctx);
 
-      if (!data?.status || data?.result?.code !== 0 || !data?.result?.data) {
-        throw new Error(data?.result?.msg || "La API no devolvió datos.");
+      if (!videoUrl) {
+        cooldowns.delete(userId);
+        return sock.sendMessage(from, {
+          text: "❌ Uso: .tiktok <link de TikTok> o responde a un mensaje con el link",
+          ...global.channelInfo,
+        });
       }
-
-      const info = data.result.data;
-
-      // 2) Selección URL video (prioridad)
-      const candidates = [info.hdplay, info.play, info.wmplay].filter(Boolean);
-      if (!candidates.length) throw new Error("No hay enlaces de video disponibles.");
-
-      // 3) Descargar video como buffer (evita negro)
-      let bin = null;
-      for (const u of candidates) {
-        try {
-          const got = await downloadBinary(u);
-          const isProbablyMp4 =
-            got.contentType.includes("video") || got.buf.slice(4, 8).toString("ascii") === "ftyp";
-          if (!isProbablyMp4) continue;
-          if (got.size > MAX_BYTES) throw new Error(`El video supera el límite de ${MAX_MB}MB.`);
-          bin = got;
-          break;
-        } catch {
-          // intenta siguiente
-        }
-      }
-
-      if (!bin) throw new Error("No pude descargar el video como MP4.");
-
-      // Datos caption
-      const title = clip(info.title || "Sin descripción", 100);
-      const authorName =
-        info?.author?.nickname ||
-        info?.author?.unique_id ||
-        info?.music_info?.author ||
-        "TikTok User";
-
-      const caption = `
-${BORDER}
-🎬 *TIKTOK DOWNLOADER (HD)*
-${BORDER}
-
-📝 *Título:* ${title}
-👤 *Autor:* ${authorName}
-🕒 *Duración:* ${Number(info.duration || 0)}s
-🌎 *Región:* ${info.region || "—"}
-📅 *Publicado:* ${unixToDate(info.create_time)}
-
-${LINE}
-📊 *Stats:* ▶️ ${formatNum(info.play_count)} | ❤️ ${formatNum(info.digg_count)} | 💬 ${formatNum(info.comment_count)} | 🔁 ${formatNum(info.share_count)}
-
-${LINE}
-🤖 *Bot:* ${BOT_NAME}
-${BORDER}`.trim();
-
-      // ✅ 2) ENVIAR VIDEO (sin mensajes extra)
-      try {
-        await sock.sendMessage(
-          from,
-          {
-            video: bin.buf,
-            mimetype: "video/mp4",
-            caption,
-            fileName: `tiktok_${info.id || Date.now()}.mp4`,
-            ...channelContext,
-          },
-          quoted
-        );
-      } catch {
-        // fallback documento
-        await sock.sendMessage(
-          from,
-          {
-            document: bin.buf,
-            mimetype: "video/mp4",
-            fileName: `tiktok_${info.id || Date.now()}.mp4`,
-            caption,
-            ...channelContext,
-          },
-          quoted
-        );
-      }
-
-      // ✅ 3) ENVIAR MUSICA (si existe) como audio directo (buffer)
-      const audioUrl = info?.music_info?.play || info?.music || null;
-      if (audioUrl) {
-        try {
-          const a = await downloadBinary(audioUrl);
-          // si baja demasiado grande, solo manda link
-          if (a.size <= MAX_BYTES) {
-            await sock.sendMessage(
-              from,
-              {
-                audio: a.buf,
-                mimetype: "audio/mpeg",
-                ptt: false,
-                fileName: `tiktok_audio_${info.id || Date.now()}.mp3`,
-                ...channelContext,
-              },
-              quoted
-            );
-          } else {
-            await sock.sendMessage(
-              from,
-              { text: `🎵 *Audio:* ${audioUrl}`, ...channelContext },
-              quoted
-            );
-          }
-        } catch {
-          // fallback link
-          await sock.sendMessage(
-            from,
-            { text: `🎵 *Audio:* ${audioUrl}`, ...channelContext },
-            quoted
-          );
-        }
-      }
-    } catch (err) {
-      console.error("❌ ERROR TIKTOK:", err?.message || err);
-      cooldowns.delete(userId);
 
       await sock.sendMessage(
         from,
         {
-          text:
-            `❌ *ERROR*\n${LINE}\n` +
-            `No se pudo obtener el video.\n` +
-            `🧩 *Motivo:* ${clip(err?.message || "Error desconocido", 140)}\n` +
-            `${LINE}`,
-          ...channelContext,
+          text: `⬇️ Preparando TikTok...\n\n🎬 api dvyer`,
+          ...global.channelInfo,
         },
         quoted
       );
+
+      const info = await requestTikTokLink(videoUrl);
+
+      await sendTikTokVideo(sock, from, quoted, {
+        directUrl: info.directUrl,
+        title: info.title,
+        fileName: info.fileName,
+      });
+    } catch (err) {
+      console.error("TIKTOK ERROR:", err?.message || err);
+      cooldowns.delete(userId);
+
+      await sock.sendMessage(from, {
+        text: `❌ ${String(err?.message || "No se pudo procesar el video.")}`,
+        ...global.channelInfo,
+      });
     }
   },
 };
+
