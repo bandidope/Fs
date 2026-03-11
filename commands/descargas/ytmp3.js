@@ -4,7 +4,7 @@ import axios from "axios";
 import { spawn } from "child_process";
 
 const API_BASE = "https://dv-yer-api.online";
-const API_AUDIO_URL = `${API_BASE}/ytmp3`;
+const API_AUDIO_URL = `${API_BASE}/ytdlmp3`;
 const API_SEARCH_URL = `${API_BASE}/ytsearch`;
 
 const COOLDOWN_TIME = 10 * 1000;
