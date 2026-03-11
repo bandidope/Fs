@@ -9,7 +9,7 @@ const API_VIDEO_URL = `${API_BASE}/ytdlmp4`;
 const API_SEARCH_URL = `${API_BASE}/ytsearch`;
 
 const COOLDOWN_TIME = 15 * 1000;
-const VIDEO_QUALITY = "360p";
+const VIDEO_QUALITIES = ["360p", "240p", "144p"];
 const REQUEST_TIMEOUT = 120000;
 const MAX_VIDEO_BYTES = 120 * 1024 * 1024;
 const TMP_DIR = path.join(process.cwd(), "tmp");
@@ -117,6 +117,19 @@ function parseContentDispositionFileName(headerValue) {
   return "";
 }
 
+async function streamToText(stream) {
+  return await new Promise((resolve, reject) => {
+    let data = "";
+
+    stream.on("data", (chunk) => {
+      data += chunk.toString();
+    });
+
+    stream.on("end", () => resolve(data));
+    stream.on("error", reject);
+  });
+}
+
 async function apiGet(url, params, timeout = 35000) {
   const response = await axios.get(url, {
     timeout,
@@ -152,26 +165,13 @@ async function resolveSearch(query) {
   };
 }
 
-async function streamToText(stream) {
-  return await new Promise((resolve, reject) => {
-    let data = "";
-
-    stream.on("data", (chunk) => {
-      data += chunk.toString();
-    });
-
-    stream.on("end", () => resolve(data));
-    stream.on("error", reject);
-  });
-}
-
-async function downloadVideoFromApi(videoUrl, outputPath) {
+async function downloadQualityFromApi(videoUrl, quality, outputPath) {
   const response = await axios.get(API_VIDEO_URL, {
     responseType: "stream",
     timeout: REQUEST_TIMEOUT,
     params: {
       mode: "file",
-      quality: VIDEO_QUALITY,
+      quality,
       url: videoUrl,
     },
     validateStatus: () => true,
@@ -218,21 +218,42 @@ async function downloadVideoFromApi(videoUrl, outputPath) {
   }
 
   const size = fs.statSync(outputPath).size;
-
   if (!size || size < 150000) {
     throw new Error("Video inválido");
   }
 
-  if (size > MAX_VIDEO_BYTES) {
-    throw new Error("Video demasiado grande");
-  }
+  const fromHeader = parseContentDispositionFileName(
+    response.headers?.["content-disposition"]
+  );
 
-  const fromHeader = parseContentDispositionFileName(response.headers?.["content-disposition"]);
   return {
     path: outputPath,
     size,
     fileName: normalizeMp4Name(fromHeader || path.basename(outputPath)),
+    qualityUsed: quality,
   };
+}
+
+async function downloadVideoFromApiWithFallback(videoUrl) {
+  const errors = [];
+
+  for (const quality of VIDEO_QUALITIES) {
+    const outputPath = path.join(TMP_DIR, `${Date.now()}-${quality}.mp4`);
+
+    try {
+      return await downloadQualityFromApi(videoUrl, quality, outputPath);
+    } catch (error) {
+      errors.push(`${quality}: ${error?.message || error}`);
+
+      try {
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      } catch {}
+
+      await sleep(700);
+    }
+  }
+
+  throw new Error(errors.join(" | ") || "No se pudo descargar el video.");
 }
 
 async function normalizeVideoForWhatsApp(inputPath, outputPath) {
@@ -280,7 +301,7 @@ async function normalizeVideoForWhatsApp(inputPath, outputPath) {
   });
 }
 
-async function sendVideoFile(sock, from, quoted, { filePath, fileName, title }) {
+async function sendVideoFile(sock, from, quoted, { filePath, fileName, title, qualityUsed }) {
   try {
     await sock.sendMessage(
       from,
@@ -288,7 +309,7 @@ async function sendVideoFile(sock, from, quoted, { filePath, fileName, title }) 
         video: { url: filePath },
         mimetype: "video/mp4",
         fileName,
-        caption: `🎬 ${title}\n🌐 API DVYER`,
+        caption: `api dvyer\n\n🎬 ${title}\n🎚️ ${qualityUsed}`,
         ...global.channelInfo,
       },
       quoted
@@ -303,7 +324,7 @@ async function sendVideoFile(sock, from, quoted, { filePath, fileName, title }) 
         document: { url: filePath },
         mimetype: "video/mp4",
         fileName,
-        caption: `📄 Enviado como documento\n🎬 ${title}\n🌐 API DVYER`,
+        caption: `api dvyer\n\n🎬 ${title}\n🎚️ ${qualityUsed}`,
         ...global.channelInfo,
       },
       quoted
@@ -370,38 +391,38 @@ export default {
         thumbnail
           ? {
               image: { url: thumbnail },
-              caption: `⬇️ Preparando video...\n\n🎬 ${title}\n🎚️ Calidad: ${VIDEO_QUALITY}\n🌐 API DVYER`,
+              caption: `⬇️ Preparando video...\n\n🎬 ${title}\n🎚️ Intentando: ${VIDEO_QUALITIES.join(" -> ")}\n🌐 api dvyer`,
               ...global.channelInfo,
             }
           : {
-              text: `⬇️ Preparando video...\n\n🎬 ${title}\n🎚️ Calidad: ${VIDEO_QUALITY}\n🌐 API DVYER`,
+              text: `⬇️ Preparando video...\n\n🎬 ${title}\n🎚️ Intentando: ${VIDEO_QUALITIES.join(" -> ")}\n🌐 api dvyer`,
               ...global.channelInfo,
             },
         quoted
       );
 
-      const stamp = Date.now();
-      rawVideoFile = path.join(TMP_DIR, `${stamp}-raw.mp4`);
-      finalVideoFile = path.join(TMP_DIR, `${stamp}-final.mp4`);
+      const downloaded = await downloadVideoFromApiWithFallback(videoUrl);
+      rawVideoFile = downloaded.path;
 
-      const downloaded = await downloadVideoFromApi(videoUrl, rawVideoFile);
+      finalVideoFile = path.join(TMP_DIR, `${Date.now()}-final.mp4`);
 
       const normalized = await normalizeVideoForWhatsApp(
         downloaded.path,
         finalVideoFile
       );
 
-      const sendPath = normalized && fs.existsSync(finalVideoFile)
-        ? finalVideoFile
-        : rawVideoFile;
+      const sendPath =
+        normalized && fs.existsSync(finalVideoFile)
+          ? finalVideoFile
+          : rawVideoFile;
 
-      const finalTitle = safeFileName(title || "video");
-      const finalName = normalizeMp4Name(downloaded.fileName || `${finalTitle}.mp4`);
+      title = safeFileName(title || "video");
 
       await sendVideoFile(sock, from, quoted, {
         filePath: sendPath,
-        fileName: finalName,
-        title: finalTitle,
+        fileName: downloaded.fileName || `${title}.mp4`,
+        title,
+        qualityUsed: downloaded.qualityUsed,
       });
     } catch (err) {
       console.error("YTMP4 ERROR:", err?.message || err);
