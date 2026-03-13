@@ -3,6 +3,7 @@ import path from "path";
 import os from "os";
 import axios from "axios";
 import { pipeline } from "stream/promises";
+import { spawn } from "child_process";
 
 const API_BASE = "https://dv-yer-api.online";
 const API_INSTAGRAM_URL = `${API_BASE}/instagram`;
@@ -254,6 +255,55 @@ async function downloadInstagramFile(postUrl, pick, outputPath) {
   };
 }
 
+async function normalizeVideoWithFfmpeg(inputPath, outputPath) {
+  return await new Promise((resolve, reject) => {
+    const ffmpeg = spawn(
+      "ffmpeg",
+      [
+        "-y",
+        "-i",
+        inputPath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        "-loglevel",
+        "error",
+        outputPath,
+      ],
+      {
+        stdio: ["ignore", "ignore", "pipe"],
+      }
+    );
+
+    let errorText = "";
+
+    ffmpeg.stderr.on("data", (chunk) => {
+      errorText += chunk.toString();
+    });
+
+    ffmpeg.on("error", (error) => {
+      if (error?.code === "ENOENT") {
+        reject(new Error("ffmpeg no está instalado en el hosting."));
+        return;
+      }
+      reject(error);
+    });
+
+    ffmpeg.on("close", (code) => {
+      if (code === 0) {
+        resolve(true);
+        return;
+      }
+      reject(new Error(errorText.trim() || "El archivo no pasó la verificación de video."));
+    });
+  });
+}
+
 async function sendInstagramMedia(sock, from, quoted, { filePath, fileName, mediaType, title, username, size }) {
   const lines = ["api dvyer", "", `📸 ${title}`];
   if (username) lines.push(`👤 ${username}`);
@@ -328,7 +378,8 @@ export default {
     const quoted = msg?.key ? { quoted: msg } : undefined;
     const userId = `${from}:instagram`;
 
-    let tempPath = null;
+    let rawPath = null;
+    let finalPath = null;
 
     const until = cooldowns.get(userId);
     if (until && until > Date.now()) {
@@ -381,16 +432,35 @@ export default {
         );
       }
 
-      tempPath = path.join(TMP_DIR, `${Date.now()}-${info.fileName}`);
-      const downloaded = await downloadInstagramFile(postUrl, pick, tempPath);
+      rawPath = path.join(TMP_DIR, `${Date.now()}-raw-${info.fileName}`);
+      const downloaded = await downloadInstagramFile(postUrl, pick, rawPath);
+
+      let sendPath = downloaded.tempPath;
+      let sendSize = downloaded.size;
+
+      if (info.mediaType === "video") {
+        finalPath = path.join(TMP_DIR, `${Date.now()}-final-${normalizeMediaFileName(info.fileName, "video")}`);
+        await normalizeVideoWithFfmpeg(downloaded.tempPath, finalPath);
+
+        if (!fs.existsSync(finalPath)) {
+          throw new Error("No se pudo preparar el video final.");
+        }
+
+        sendPath = finalPath;
+        sendSize = fs.statSync(finalPath).size;
+
+        if (!sendSize || sendSize < 100000) {
+          throw new Error("El video verificado es inválido.");
+        }
+      }
 
       await sendInstagramMedia(sock, from, quoted, {
-        filePath: downloaded.tempPath,
-        fileName: info.fileName,
+        filePath: sendPath,
+        fileName: normalizeMediaFileName(info.fileName, info.mediaType),
         mediaType: info.mediaType,
         title: info.title,
         username: info.username,
-        size: downloaded.size,
+        size: sendSize,
       });
     } catch (err) {
       console.error("INSTAGRAM ERROR:", err?.message || err);
@@ -400,7 +470,8 @@ export default {
         ...global.channelInfo,
       });
     } finally {
-      deleteFileSafe(tempPath);
+      deleteFileSafe(rawPath);
+      deleteFileSafe(finalPath);
     }
   },
 };
