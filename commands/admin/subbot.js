@@ -15,10 +15,6 @@ function normalizeTimestamp(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-function getSenderNumber(sender) {
-  return normalizeNumber(String(sender || "").split("@")[0].split(":")[0]);
-}
-
 function formatDateTime(value) {
   if (!value) return "Sin registro";
 
@@ -230,7 +226,6 @@ export default {
     const prefix = getPrefix(settings);
     const runtime = global.botRuntime;
     const chatStatus = getCurrentChatStatus({ isGroup, botId, botLabel });
-    const senderNumber = getSenderNumber(sender);
 
     if (
       !runtime?.requestBotPairingCode ||
@@ -374,6 +369,25 @@ export default {
       );
     }
 
+    if (!parsed.number) {
+      const slotHint = parsed.slot ? ` ${parsed.slot}` : "";
+
+      return sock.sendMessage(
+        from,
+        {
+          text:
+            `*NOTIFICACION SUBBOT*\n\n` +
+            `Para pedir tu subbot debes enviar tu numero con codigo de pais.\n` +
+            `Ejemplo:\n` +
+            `*${prefix}subbot${slotHint} 521234567890*\n\n` +
+            `Si no eliges slot, el bot usa el primer espacio libre.\n` +
+            `En este chat: ${chatStatus}`,
+          ...global.channelInfo,
+        },
+        quoted
+      );
+    }
+
     if (!subbotAccess.publicRequests && !esOwner) {
       return sock.sendMessage(
         from,
@@ -388,11 +402,11 @@ export default {
       );
     }
 
-    const targetNumber = parsed.number || senderNumber;
+    const targetNumber = parsed.number;
     const loadingText =
       parsed.slot
         ? `Generando codigo del subbot ${parsed.slot} para ${targetNumber || "tu numero"}...`
-        : `Generando codigo para tu subbot ${targetNumber || "automatico"}...`;
+        : `Generando codigo para tu subbot ${targetNumber}...`;
 
     await sock.sendMessage(
       from,
@@ -409,9 +423,9 @@ export default {
       parsed.slot ? `subbot${parsed.slot}` : "subbot",
       {
         number: targetNumber,
-        requesterNumber: senderNumber,
+        requesterNumber: targetNumber,
         requesterJid: String(sender || ""),
-        useCache: !parsed.number,
+        useCache: true,
       }
     );
 
@@ -442,7 +456,7 @@ export default {
       } else if (result?.status === "missing_number") {
         const slotHint = parsed.slot ? ` ${parsed.slot}` : "";
         text =
-          `No pude detectar tu numero automaticamente.\n` +
+          `Debes enviar tu numero con codigo de pais.\n` +
           `Usa: *${prefix}subbot${slotHint} 51912345678*`;
       }
 
@@ -468,7 +482,7 @@ export default {
           `*${header}*\n\n` +
           `Bot: *${result.displayName}*\n` +
           `Numero: *${result.number}*\n` +
-          `Solicitante: *${senderNumber || result.number}*\n` +
+          `Solicitante: *${targetNumber}*\n` +
           `Codigo: *${result.code}*\n` +
           `Expira aprox: *${formatDuration(result.expiresInMs)}*\n` +
           `En este chat: ${chatStatus}\n\n` +
