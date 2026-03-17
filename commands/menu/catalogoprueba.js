@@ -1,4 +1,7 @@
+import baileysHelper from "baileys_helper";
 import { getPrefix } from "../sistema/_shared.js";
+
+const { sendInteractiveMessage } = baileysHelper;
 
 export default {
   name: "catalogoprueba",
@@ -67,11 +70,12 @@ export default {
     ];
 
     try {
-      await sock.sendMessage(
+      await sendInteractiveMessage(
+        sock,
         from,
         {
-          text,
           title: "Menu principal",
+          text,
           footer: "Categorias",
           interactiveButtons: [
             {
@@ -80,7 +84,6 @@ export default {
                 title: "Abrir catalogo",
                 sections: sections.map((section) => ({
                   title: section.title,
-                  highlight_label: "Categorias",
                   rows: section.rows.map((row) => ({
                     header: "DVYER BOT",
                     title: row.title,

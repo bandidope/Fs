@@ -12,13 +12,14 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "6.7.21",
+    "axios": "^1.6.0",
+    "baileys_helper": "^1.0.6",
     "chalk": "^4.1.2",
     "figlet": "^1.9.3",
     "fluent-ffmpeg": "^2.1.2",
     "pino": "^9.13.1",
-    "yt-search": "^2.10.4",
-    "axios": "^1.6.0",
-    "play-dl": "^1.9.7"
+    "play-dl": "^1.9.7",
+    "yt-search": "^2.10.4"
   },
   "overrides": {
     "minimatch": "^10.2.1"
