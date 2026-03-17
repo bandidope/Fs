@@ -533,7 +533,11 @@ function extractInteractiveResponseId(msg = {}) {
       const candidates = [
         parsed?.id,
         parsed?.rowId,
+        parsed?.row_id,
         parsed?.selectedId,
+        parsed?.selected_id,
+        parsed?.selectedRowId,
+        parsed?.selected_row_id,
         parsed?.buttonId,
         parsed?.button_id,
         parsed?.name,
