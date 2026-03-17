@@ -1,64 +1,4 @@
-import * as baileys from "@whiskeysockets/baileys";
 import { getPrefix } from "../sistema/_shared.js";
-
-const generateWAMessageFromContent = baileys.generateWAMessageFromContent;
-const proto = baileys.proto;
-
-async function sendNativeCatalog({
-  sock,
-  from,
-  msg,
-  title,
-  text,
-  footer,
-  buttonTitle,
-  sections,
-}) {
-  if (!proto?.Message?.InteractiveMessage || typeof generateWAMessageFromContent !== "function") {
-    throw new Error("InteractiveMessage no disponible");
-  }
-
-  const content = proto.Message.fromObject({
-    viewOnceMessage: {
-      message: {
-        messageContextInfo: {
-          deviceListMetadata: {},
-          deviceListMetadataVersion: 2,
-        },
-        interactiveMessage: proto.Message.InteractiveMessage.create({
-          header: proto.Message.InteractiveMessage.Header.create({
-            title,
-            hasMediaAttachment: false,
-          }),
-          body: proto.Message.InteractiveMessage.Body.create({
-            text,
-          }),
-          footer: proto.Message.InteractiveMessage.Footer.create({
-            text: footer,
-          }),
-          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-            buttons: [
-              {
-                name: "single_select",
-                buttonParamsJson: JSON.stringify({
-                  title: buttonTitle,
-                  sections,
-                }),
-              },
-            ],
-          }),
-        }),
-      },
-    },
-  });
-
-  const waMessage = generateWAMessageFromContent(from, content, {
-    quoted: msg,
-    userJid: sock.user?.id,
-  });
-
-  await sock.relayMessage(from, waMessage.message, { messageId: waMessage.key.id });
-}
 
 export default {
   name: "catalogoprueba",
@@ -127,16 +67,33 @@ export default {
     ];
 
     try {
-      await sendNativeCatalog({
-        sock,
+      await sock.sendMessage(
         from,
-        msg,
-        title: "Menu principal",
-        text,
-        footer: "Categorias",
-        buttonTitle: "Abrir catalogo",
-        sections,
-      });
+        {
+          text,
+          title: "Menu principal",
+          footer: "Categorias",
+          interactiveButtons: [
+            {
+              name: "single_select",
+              buttonParamsJson: JSON.stringify({
+                title: "Abrir catalogo",
+                sections: sections.map((section) => ({
+                  title: section.title,
+                  highlight_label: "Categorias",
+                  rows: section.rows.map((row) => ({
+                    header: "DVYER BOT",
+                    title: row.title,
+                    description: row.description,
+                    id: row.id,
+                  })),
+                })),
+              }),
+            },
+          ],
+        },
+        { quoted: msg }
+      );
     } catch (error) {
       console.warn("CATALOGO fallback:", error?.message || error);
 
