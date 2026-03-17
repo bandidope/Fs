@@ -38,6 +38,9 @@ const DEFAULT_SUBBOT_SLOTS = 15;
 const MAX_SUBBOT_SLOTS = 50;
 const PAIRING_CODE_CACHE_MS = 60_000;
 const PROCESS_RESTART_DELAY_MS = 3000;
+const SETTINGS_SYNC_INTERVAL_MS = 4000;
+const BOT_RUNTIME_STATE_TTL_MS = 20_000;
+const REMOTE_PAIRING_WAIT_MS = 18_000;
 const logger = pino({ level: "silent" });
 const FIXED_BROWSER = ["Windows", "Chrome", "114.0.5735.198"];
 
@@ -50,6 +53,39 @@ const __dirname = path.dirname(__filename);
 const SETTINGS_FILE = path.join(__dirname, "settings", "settings.json");
 const DATABASE_DIR = path.join(process.cwd(), "database");
 const USAGE_STATS_FILE = path.join(DATABASE_DIR, "usage-stats.json");
+const RUNTIME_DIR = path.join(DATABASE_DIR, "runtime");
+const BOT_RUNTIME_STATE_DIR = path.join(RUNTIME_DIR, "bot-states");
+
+function normalizeProcessBotId(value = "") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (!normalized || normalized === "all" || normalized === "*") {
+    return "all";
+  }
+
+  if (normalized === "main" || normalized === "principal") {
+    return "main";
+  }
+
+  const slotMatch = normalized.match(/^(?:subbot|slot)?(\d{1,2})$/);
+  if (slotMatch) {
+    return `subbot${Number.parseInt(slotMatch[1], 10)}`;
+  }
+
+  const compact = normalized.replace(/[-_\s]/g, "");
+  if (/^subbot\d{1,2}$/.test(compact)) {
+    return compact;
+  }
+
+  return "all";
+}
+
+const PROCESS_BOT_ID = normalizeProcessBotId(
+  process.env.BOT_ID || process.env.BOT_INSTANCE || process.env.DVYER_BOT_ID || "all"
+);
+const SPLIT_PROCESS_MODE = PROCESS_BOT_ID !== "all";
 
 function clampSubbotSlots(value) {
   const parsed = Number(value || 0);
@@ -257,24 +293,28 @@ function saveSettingsFile() {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
 }
 
+function refreshChannelInfo() {
+  global.channelInfo = settings?.newsletter?.enabled
+    ? {
+        contextInfo: {
+          forwardingScore: 999,
+          isForwarded: true,
+          forwardedNewsletterMessageInfo: {
+            newsletterJid: settings.newsletter.jid,
+            newsletterName: settings.newsletter.name,
+            serverMessageId: -1,
+          },
+        },
+      }
+    : {};
+}
+
 ensureSubbotSettings(settings);
 ensureSystemSettings(settings);
 
 // ================= INFO CHANNEL =================
 
-global.channelInfo = settings?.newsletter?.enabled
-  ? {
-      contextInfo: {
-        forwardingScore: 999,
-        isForwarded: true,
-        forwardedNewsletterMessageInfo: {
-          newsletterJid: settings.newsletter.jid,
-          newsletterName: settings.newsletter.name,
-          serverMessageId: -1,
-        },
-      },
-    }
-  : {};
+refreshChannelInfo();
 
 // ================= TMP =================
 
@@ -283,6 +323,12 @@ const TMP_DIR = path.join(process.cwd(), "tmp");
 try {
   if (!fs.existsSync(DATABASE_DIR)) {
     fs.mkdirSync(DATABASE_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(RUNTIME_DIR)) {
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(BOT_RUNTIME_STATE_DIR)) {
+    fs.mkdirSync(BOT_RUNTIME_STATE_DIR, { recursive: true });
   }
   if (!fs.existsSync(TMP_DIR)) {
     fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -539,7 +585,20 @@ function buildBotConfigs(currentSettings) {
 
 let SUBBOT_SLOT_CONFIGS = buildSubbotSlotConfigs(settings);
 let BOT_CONFIGS = buildBotConfigs(settings);
-const OWNER_IDS = buildOwnerIds(settings);
+let OWNER_IDS = buildOwnerIds(settings);
+
+function ownsBotInThisProcess(botId) {
+  return PROCESS_BOT_ID === "all" || normalizeProcessBotId(botId) === PROCESS_BOT_ID;
+}
+
+function getManagedProcessBotConfigs() {
+  if (!SPLIT_PROCESS_MODE) {
+    return BOT_CONFIGS.slice();
+  }
+
+  const targetConfig = getBotConfigById(PROCESS_BOT_ID);
+  return targetConfig ? [targetConfig] : [];
+}
 
 function getSubbotConfigBySlot(slotNumber) {
   return SUBBOT_SLOT_CONFIGS.find((config) => config.slot === Number(slotNumber)) || null;
@@ -692,6 +751,71 @@ function safeReadJson(filePath, fallback) {
   }
 }
 
+function replaceObjectContents(target, source) {
+  for (const key of Object.keys(target || {})) {
+    delete target[key];
+  }
+
+  Object.assign(target, source || {});
+}
+
+function getBotRuntimeStateFile(botId) {
+  return path.join(BOT_RUNTIME_STATE_DIR, `${normalizeProcessBotId(botId)}.json`);
+}
+
+function readPersistedBotRuntimeState(botId) {
+  try {
+    const state = safeReadJson(getBotRuntimeStateFile(botId), null);
+    if (!state || typeof state !== "object") return null;
+    const updatedAt = Number(state.updatedAt || 0);
+    if (!updatedAt || Date.now() - updatedAt > BOT_RUNTIME_STATE_TTL_MS) {
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function clearPersistedBotRuntimeState(botId) {
+  try {
+    fs.rmSync(getBotRuntimeStateFile(botId), { force: true });
+  } catch {}
+}
+
+function writePersistedBotRuntimeState(botState) {
+  if (!botState?.config?.id || !ownsBotInThisProcess(botState.config.id)) return;
+
+  try {
+    const summary = summarizeBotState(botState);
+    fs.writeFileSync(
+      getBotRuntimeStateFile(botState.config.id),
+      JSON.stringify(
+        {
+          ...summary,
+          processBotId: PROCESS_BOT_ID,
+          processPid: process.pid,
+          splitProcessMode: SPLIT_PROCESS_MODE,
+          updatedAt: Date.now(),
+        },
+        null,
+        2
+      )
+    );
+  } catch {}
+}
+
+function flushManagedBotRuntimeStates() {
+  for (const config of getManagedProcessBotConfigs()) {
+    const botState = ensureBotState(config);
+    botState.config = {
+      ...botState.config,
+      ...config,
+    };
+    writePersistedBotRuntimeState(botState);
+  }
+}
+
 function normalizeUsageStats(data = {}) {
   const source = isPlainObject(data) ? data : {};
 
@@ -710,6 +834,7 @@ function normalizeUsageStats(data = {}) {
 
 const usageStats = normalizeUsageStats(safeReadJson(USAGE_STATS_FILE, {}));
 let usageStatsSaveTimer = null;
+let managedBotSyncInterval = null;
 
 function scheduleUsageStatsSave() {
   if (usageStatsSaveTimer) return;
@@ -953,6 +1078,8 @@ function refreshBotConfigCache() {
   ensureSystemSettings(settings);
   SUBBOT_SLOT_CONFIGS = buildSubbotSlotConfigs(settings);
   BOT_CONFIGS = buildBotConfigs(settings);
+  OWNER_IDS = buildOwnerIds(settings);
+  refreshChannelInfo();
 
   const knownConfigs = [
     buildMainBotConfig(settings),
@@ -1102,6 +1229,7 @@ function releaseSubbotSlot(botState, options = {}) {
   console.log(
     `${getBotTag(botState)} Slot liberado (${options?.reason || "sin motivo"})`
   );
+  writePersistedBotRuntimeState(botState);
 
   return true;
 }
@@ -1505,6 +1633,11 @@ function scheduleReconnect(botState, ms = 2500) {
 
 function banner() {
   console.clear();
+  const managedLabels = getManagedProcessBotConfigs()
+    .map((cfg) => cfg.label)
+    .filter(Boolean)
+    .join(", ") || "NINGUNO";
+  const activeConfigLabels = BOT_CONFIGS.map((cfg) => cfg.label).join(", ") || "NINGUNO";
 
   console.log(
     chalk.magentaBright(`
@@ -1521,8 +1654,12 @@ function banner() {
     Array.isArray(settings.prefix) ? settings.prefix.join(", ") : settings.prefix,
     chalk.yellow("\nComandos cargados :"),
     comandos.size,
-    chalk.magenta("\nBots activos :"),
-    BOT_CONFIGS.map((cfg) => cfg.label).join(", ")
+    chalk.magenta("\nModo proceso :"),
+    SPLIT_PROCESS_MODE ? `SEPARADO (${PROCESS_BOT_ID})` : "UNICO",
+    chalk.cyan("\nEste proceso maneja :"),
+    managedLabels,
+    chalk.magenta("\nBots habilitados :"),
+    activeConfigLabels
   );
 
   console.log(chalk.gray("------------------------------"));
@@ -1591,6 +1728,7 @@ function resetPairingCache(botState) {
   botState.lastPairingCode = "";
   botState.lastPairingNumber = "";
   botState.lastPairingAt = 0;
+  writePersistedBotRuntimeState(botState);
 }
 
 function cachePairingCode(botState, code, number) {
@@ -1618,6 +1756,7 @@ function cachePairingCode(botState, code, number) {
   }, PAIRING_CODE_CACHE_MS);
 
   botState.pairingResetTimer.unref?.();
+  writePersistedBotRuntimeState(botState);
 }
 
 function getCachedPairingCode(botState) {
@@ -1684,8 +1823,46 @@ function summarizeBotState(botState) {
 
 function summarizeBotConfig(config) {
   const botState = botStates.get(config.id);
-  if (botState) {
+  const shouldUseLocalState =
+    botState &&
+    (!SPLIT_PROCESS_MODE ||
+      ownsBotInThisProcess(config?.id) ||
+      botState.sock ||
+      botState.connecting ||
+      botState.authState ||
+      botState.pairingRequested ||
+      botState.lastPairingCode ||
+      botState.connectedAt ||
+      botState.lastDisconnectAt);
+
+  if (shouldUseLocalState) {
     return summarizeBotState(botState);
+  }
+
+  const persistedState = readPersistedBotRuntimeState(config?.id);
+  if (persistedState) {
+    return {
+      ...persistedState,
+      id: String(config?.id || persistedState.id || ""),
+      slot: Number(config?.slot || persistedState.slot || 0),
+      label: String(config?.label || persistedState.label || "BOT"),
+      displayName: String(config?.displayName || persistedState.displayName || "Bot"),
+      authFolder: String(config?.authFolder || persistedState.authFolder || ""),
+      enabled: config?.enabled !== false,
+      configuredNumber:
+        sanitizePhoneNumber(config?.pairingNumber) || persistedState.configuredNumber || "",
+      requesterNumber:
+        sanitizePhoneNumber(config?.requesterNumber) ||
+        persistedState.requesterNumber ||
+        sanitizePhoneNumber(config?.pairingNumber) ||
+        "",
+      requesterJid: String(config?.requesterJid || persistedState.requesterJid || ""),
+      requestedAt: normalizeTimestamp(config?.requestedAt || persistedState.requestedAt),
+      releasedAt: normalizeTimestamp(config?.releasedAt || persistedState.releasedAt),
+      hasConfiguredNumber: Boolean(
+        sanitizePhoneNumber(config?.pairingNumber) || persistedState.configuredNumber
+      ),
+    };
   }
 
   const configuredNumber = sanitizePhoneNumber(config?.pairingNumber);
@@ -1747,11 +1924,19 @@ function shouldStartSecondaryBot(config = {}) {
 }
 
 function shouldPromptInConsole(botState) {
-  return botState?.config?.id === "main";
+  return ownsBotInThisProcess(botState?.config?.id) && botState?.config?.id === "main";
 }
 
 function shouldAutoRequestPairingCode(botState) {
-  return botState?.config?.id === "main";
+  if (!ownsBotInThisProcess(botState?.config?.id)) {
+    return false;
+  }
+
+  if (botState?.config?.id === "main") {
+    return true;
+  }
+
+  return Boolean(sanitizePhoneNumber(botState?.config?.pairingNumber));
 }
 
 function getMainBotState() {
@@ -1760,8 +1945,102 @@ function getMainBotState() {
 
 function isMainBotReady() {
   const mainBotState = getMainBotState();
-  if (!mainBotState) return false;
-  return Boolean(isBotRegistered(mainBotState) || mainBotState?.sock?.user?.id);
+  if (mainBotState && Boolean(isBotRegistered(mainBotState) || mainBotState?.sock?.user?.id)) {
+    return true;
+  }
+
+  const persistedMain = readPersistedBotRuntimeState("main");
+  return Boolean(persistedMain?.registered || persistedMain?.connected);
+}
+
+function shouldManagedProcessStartBot(config = {}) {
+  if (!config) return false;
+
+  if (config.id === "main") {
+    return true;
+  }
+
+  if (config.enabled === false) {
+    return false;
+  }
+
+  if (!SPLIT_PROCESS_MODE) {
+    return shouldStartSecondaryBot(config);
+  }
+
+  return Boolean(
+    hasPersistedBotSession(config) ||
+      (sanitizePhoneNumber(config?.pairingNumber) && isMainBotReady())
+  );
+}
+
+function stopLocalManagedBot(botState, reason = "disabled") {
+  if (!botState) return;
+
+  clearReconnectTimer(botState);
+  clearPairingResetTimer(botState);
+
+  try {
+    botState.sock?.end?.();
+  } catch {}
+
+  botState.sock = null;
+  botState.connecting = false;
+  botState.lastDisconnectAt = Date.now();
+  botState.connectedAt = 0;
+  botState.groupCache?.clear?.();
+  console.log(`${getBotTag(botState)} Detenido localmente (${reason})`);
+  writePersistedBotRuntimeState(botState);
+}
+
+function syncSettingsFromDisk() {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE)) return false;
+    const raw = fs.readFileSync(SETTINGS_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    replaceObjectContents(settings, parsed);
+    refreshBotConfigCache();
+    return true;
+  } catch (err) {
+    console.error("Error recargando settings:", err);
+    return false;
+  }
+}
+
+async function syncManagedProcessBots() {
+  syncSettingsFromDisk();
+
+  for (const config of getManagedProcessBotConfigs()) {
+    const botState = ensureBotState(config);
+    botState.config = {
+      ...botState.config,
+      ...config,
+    };
+
+    if (!shouldManagedProcessStartBot(config)) {
+      if (botState.sock || botState.connecting || botState.reconnectTimer) {
+        stopLocalManagedBot(botState, config.enabled === false ? "slot_apagado" : "esperando_sesion");
+      } else {
+        writePersistedBotRuntimeState(botState);
+      }
+      continue;
+    }
+
+    if (!botState.sock && !botState.connecting) {
+      await iniciarInstanciaBot(botState.config);
+    }
+
+    if (
+      botState.sock &&
+      !isBotRegistered(botState) &&
+      shouldAutoRequestPairingCode(botState) &&
+      !botState.pairingRequested
+    ) {
+      await requestPairingCodeSafe(botState);
+    }
+
+    writePersistedBotRuntimeState(botState);
+  }
 }
 
 async function ensureBotSocket(botState) {
@@ -1914,11 +2193,57 @@ async function requestPairingCode(botState, options = {}) {
 }
 
 async function startSecondaryBots() {
+  if (SPLIT_PROCESS_MODE) {
+    return;
+  }
+
   for (const config of BOT_CONFIGS) {
     if (config.id === "main") continue;
     if (!shouldStartSecondaryBot(config)) continue;
     await iniciarInstanciaBot(config);
   }
+}
+
+async function waitForRemoteBotPairing(targetConfig, timeoutMs = REMOTE_PAIRING_WAIT_MS) {
+  const timeoutAt = Date.now() + Math.max(3000, Number(timeoutMs || REMOTE_PAIRING_WAIT_MS));
+
+  while (Date.now() < timeoutAt) {
+    syncSettingsFromDisk();
+    const currentConfig = getBotConfigById(targetConfig?.id || "");
+    const summary = currentConfig ? summarizeBotConfig(currentConfig) : null;
+
+    if (summary?.cachedPairingCode) {
+      return {
+        ok: true,
+        status: "created",
+        cached: false,
+        label: summary.label,
+        displayName: summary.displayName,
+        slot: Number(summary.slot || 0),
+        code: summary.cachedPairingCode,
+        number: summary.cachedPairingNumber || summary.configuredNumber || "",
+        expiresInMs: Number(summary.cachedPairingExpiresInMs || PAIRING_CODE_CACHE_MS),
+      };
+    }
+
+    if (summary?.registered || summary?.connected) {
+      return {
+        ok: false,
+        status: "already_linked",
+        message: `${summary.displayName || targetConfig?.displayName || "Ese bot"} ya esta vinculado.`,
+      };
+    }
+
+    await delay(500);
+  }
+
+  return {
+    ok: false,
+    status: "pending_remote",
+    message:
+      `${targetConfig?.displayName || "El subbot"} se esta iniciando en otro proceso PM2. ` +
+      `Intenta otra vez en unos segundos.`,
+  };
 }
 
 async function requestPairingCodeSafe(botState) {
@@ -2121,6 +2446,10 @@ global.botRuntime = {
     }
 
     const targetState = ensureBotState(targetConfig);
+
+    if (!ownsBotInThisProcess(targetConfig.id) && SPLIT_PROCESS_MODE) {
+      return waitForRemoteBotPairing(targetConfig);
+    }
 
     return requestPairingCode(targetState, {
       number: options?.number,
@@ -2364,6 +2693,7 @@ async function iniciarInstanciaBot(config) {
           console.log(
             chalk.green(`${getBotTag(botState)} ${config.displayName} conectado`)
           );
+          writePersistedBotRuntimeState(botState);
 
           if (botState.config?.id === "main") {
             await startSecondaryBots();
@@ -2390,6 +2720,7 @@ async function iniciarInstanciaBot(config) {
           botState.sock = null;
           botState.lastDisconnectAt = Date.now();
           resetPairingCache(botState);
+          writePersistedBotRuntimeState(botState);
 
           if (botState.config?.id !== "main" && loggedOut) {
             releaseSubbotSlot(botState, {
@@ -2430,17 +2761,19 @@ async function iniciarInstanciaBot(config) {
 }
 
 async function start() {
-  BOT_CONFIGS.forEach((config) => ensureBotState(config));
+  getManagedProcessBotConfigs().forEach((config) => ensureBotState(config));
   await cargarComandos();
   banner();
+  await syncManagedProcessBots();
+  flushManagedBotRuntimeStates();
 
-  const mainConfig = BOT_CONFIGS.find((config) => config.id === "main");
-  if (mainConfig) {
-    await iniciarInstanciaBot(mainConfig);
-  }
-
-  if (isMainBotReady()) {
-    await startSecondaryBots();
+  if (!managedBotSyncInterval) {
+    managedBotSyncInterval = setInterval(() => {
+      syncManagedProcessBots().catch((err) => {
+        console.error("Error sincronizando procesos del bot:", err);
+      });
+    }, SETTINGS_SYNC_INTERVAL_MS);
+    managedBotSyncInterval.unref?.();
   }
 }
 
@@ -2451,6 +2784,10 @@ process.on("SIGINT", () => {
     if (usageStatsSaveTimer) {
       clearTimeout(usageStatsSaveTimer);
       usageStatsSaveTimer = null;
+    }
+    if (managedBotSyncInterval) {
+      clearInterval(managedBotSyncInterval);
+      managedBotSyncInterval = null;
     }
     fs.writeFileSync(USAGE_STATS_FILE, JSON.stringify(usageStats, null, 2));
   } catch {}
@@ -2481,6 +2818,8 @@ process.on("SIGINT", () => {
         botState.sock.end(undefined);
       }
     } catch {}
+
+    clearPersistedBotRuntimeState(botState?.config?.id);
   }
 
   console.log("Bot apagado");
