@@ -715,6 +715,29 @@ function normalizeMessageContent(message = {}) {
 
 function obtenerTexto(message) {
   const msg = normalizeMessageContent(message);
+  let interactiveSelectedId = "";
+
+  try {
+    const rawParams =
+      msg?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+      msg?.interactiveResponseMessage?.paramsJson ||
+      "";
+
+    if (rawParams) {
+      const parsed = JSON.parse(rawParams);
+      interactiveSelectedId =
+        parsed?.id ||
+        parsed?.selectedId ||
+        parsed?.selectedRowId ||
+        parsed?.selected_row_id ||
+        parsed?.singleSelectReply?.selectedRowId ||
+        parsed?.single_select_reply?.selected_row_id ||
+        parsed?.listResponse?.singleSelectReply?.selectedRowId ||
+        parsed?.list_response?.single_select_reply?.selected_row_id ||
+        parsed?.response_json?.id ||
+        "";
+    }
+  } catch {}
 
   return (
     msg?.conversation ||
@@ -727,6 +750,7 @@ function obtenerTexto(message) {
     msg?.templateButtonReplyMessage?.selectedId ||
     msg?.listResponseMessage?.title ||
     msg?.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    interactiveSelectedId ||
     ""
   );
 }
