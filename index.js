@@ -1244,6 +1244,8 @@ function ensureBotState(config) {
     lastPairingCode: "",
     lastPairingNumber: "",
     lastPairingAt: 0,
+    replacementBlocked: false,
+    replacementBlockedAt: 0,
     reconnectTimer: null,
     groupCache: new Map(),
     store: createStoreForBot(config.id),
@@ -1253,6 +1255,22 @@ function ensureBotState(config) {
 
   botStates.set(config.id, state);
   return state;
+}
+
+function clearReplacementBlock(botState) {
+  if (!botState) return;
+  botState.replacementBlocked = false;
+  botState.replacementBlockedAt = 0;
+}
+
+function markReplacementBlocked(botState) {
+  if (!botState) return;
+  botState.replacementBlocked = true;
+  botState.replacementBlockedAt = Date.now();
+}
+
+function isReplacementBlocked(botState) {
+  return Boolean(botState?.replacementBlocked);
 }
 
 function refreshBotConfigCache() {
@@ -2143,6 +2161,8 @@ function summarizeBotState(botState) {
     connectedForMs,
     hasConfiguredNumber: Boolean(configuredNumber),
     pairingPending: Boolean(botState?.pairingRequested),
+    replacementBlocked: Boolean(botState?.replacementBlocked),
+    replacementBlockedAt: Number(botState?.replacementBlockedAt || 0),
     cachedPairingCode: cachedPairing?.code || "",
     cachedPairingNumber: cachedPairing?.number || "",
     cachedPairingExpiresInMs: cachedPairing?.expiresInMs || 0,
@@ -2372,6 +2392,11 @@ function isMainBotReady() {
 function shouldManagedProcessStartBot(config = {}) {
   if (!config) return false;
 
+  const botState = botStates.get(config.id);
+  if (isReplacementBlocked(botState)) {
+    return false;
+  }
+
   if (config.id === "main") {
     return true;
   }
@@ -2578,6 +2603,8 @@ async function requestPairingCode(botState, options = {}) {
       message: `Ya hay una solicitud de codigo en proceso para ${botState.config.displayName}.`,
     };
   }
+
+  clearReplacementBlock(botState);
 
   const sock = await ensureBotSocket(botState);
   if (!sock) {
@@ -3139,6 +3166,7 @@ async function iniciarInstanciaBot(config) {
             botState.reconnectTimer = null;
           }
 
+          clearReplacementBlock(botState);
           botState.connectedAt = Date.now();
           botState.lastDisconnectAt = 0;
           resetPairingCache(botState);
@@ -3185,6 +3213,9 @@ async function iniciarInstanciaBot(config) {
           }
 
           if (connectionReplaced) {
+            markReplacementBlocked(botState);
+            clearReconnectTimer(botState);
+            writePersistedBotRuntimeState(botState);
             console.log(
               chalk.yellow(
                 `${getBotTag(botState)} Sesion reemplazada (440). ` +
