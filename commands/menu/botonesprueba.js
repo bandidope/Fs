@@ -1,3 +1,5 @@
+import { sendButtons } from "../../lib/interactive-helper.js";
+
 export default {
   name: "botonesprueba",
   command: ["botonesprueba", "buttonstest", "btnprueba"],
@@ -6,9 +8,14 @@ export default {
 
   run: async ({ sock, msg, from, usedPrefix = "." }) => {
     try {
+      if (typeof sendButtons !== "function") {
+        throw new Error("baileys_helper no esta disponible.");
+      }
+
       console.log(`BOTONES PRUEBA SEND chat=${from}`);
 
-      await sock.sendMessage(
+      await sendButtons(
+        sock,
         from,
         {
           text:
@@ -17,24 +24,22 @@ export default {
           footer: "Fsociety bot",
           buttons: [
             {
-              buttonId: `${usedPrefix}ping`,
-              buttonText: { displayText: "Ping" },
-              type: 1,
+              id: `${usedPrefix}ping`,
+              text: "Ping",
             },
             {
-              buttonId: `${usedPrefix}status`,
-              buttonText: { displayText: "Status" },
-              type: 1,
+              id: `${usedPrefix}status`,
+              text: "Status",
             },
             {
-              buttonId: `${usedPrefix}menu`,
-              buttonText: { displayText: "Menu" },
-              type: 1,
+              id: `${usedPrefix}menu`,
+              text: "Menu",
             },
           ],
-          headerType: 1,
         },
-        { quoted: msg }
+        {
+          quoted: msg,
+        }
       );
 
       console.log(`BOTONES PRUEBA OK chat=${from}`);

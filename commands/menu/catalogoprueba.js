@@ -1,4 +1,4 @@
-import { generateWAMessageFromContent, proto } from "@whiskeysockets/baileys";
+import { sendInteractiveMessage } from "../../lib/interactive-helper.js";
 
 function formatUptime(seconds) {
   seconds = Math.floor(Number(seconds || 0));
@@ -71,6 +71,10 @@ export default {
 
   run: async ({ sock, msg, from, settings, comandos }) => {
     try {
+      if (typeof sendInteractiveMessage !== "function") {
+        throw new Error("baileys_helper no esta disponible.");
+      }
+
       const prefix = getPrimaryPrefix(settings);
       const uptime = formatUptime(process.uptime());
       const categories = buildCategoryMap(comandos);
@@ -78,8 +82,11 @@ export default {
 
       console.log(`CATALOGO PRUEBA SEND chat=${from} filas=${rows.length} media=false`);
 
-      const interactiveMessage = proto.Message.InteractiveMessage.create({
-        body: proto.Message.InteractiveMessage.Body.create({
+      await sendInteractiveMessage(
+        sock,
+        from,
+        {
+          title: "MENU PRINCIPAL",
           text:
             "MENU PRINCIPAL\n" +
             "[ MENU ]\n" +
@@ -93,16 +100,8 @@ export default {
             })}\n` +
             `Uptime: ${uptime}\n\n` +
             "Elige una categoria",
-        }),
-        footer: proto.Message.InteractiveMessage.Footer.create({
-          text: "Fsociety bot",
-        }),
-        header: proto.Message.InteractiveMessage.Header.create({
-          title: "MENU PRINCIPAL",
-          hasMediaAttachment: false,
-        }),
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: [
+          footer: "Fsociety bot",
+          interactiveButtons: [
             {
               name: "single_select",
               buttonParamsJson: JSON.stringify({
@@ -116,32 +115,11 @@ export default {
               }),
             },
           ],
-          messageParamsJson: "",
-        }),
-      });
-
-      const message = generateWAMessageFromContent(
-        from,
-        {
-          viewOnceMessage: {
-            message: {
-              messageContextInfo: {
-                deviceListMetadata: {},
-                deviceListMetadataVersion: 2,
-              },
-              interactiveMessage,
-            },
-          },
         },
         {
-          userJid: sock.user?.id || sock.user?.jid,
           quoted: msg,
         }
       );
-
-      await sock.relayMessage(from, message.message, {
-        messageId: message.key.id,
-      });
 
       console.log(`CATALOGO PRUEBA OK chat=${from}`);
     } catch (error) {
