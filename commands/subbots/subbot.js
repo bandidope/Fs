@@ -1,4 +1,5 @@
 import {
+  buildSubbotMediaMessage,
   buildSubbotCard,
   formatDuration,
   getCurrentChatStatus,
@@ -87,6 +88,7 @@ export default {
         {
           text:
             `*INFO SUBBOT ${slot}*\n\n` +
+            `Resumen del slot\n\n` +
             `${buildSubbotCard(bot, { compact: false, showSensitive: true })}\n\n` +
             `Vista actual: ${chatStatus}`,
           ...global.channelInfo,
@@ -236,16 +238,15 @@ export default {
 
       return sock.sendMessage(
         from,
-        {
-          text:
-            `*NOTIFICACION SUBBOT*\n\n` +
+        buildSubbotMediaMessage(
+          "subbotcodigo.png",
+          `*NOTIFICACION SUBBOT*\n\n` +
             `Para pedir tu subbot debes enviar tu numero con codigo de pais.\n` +
             `Ejemplo:\n` +
             `*${prefix}subbot${slotHint} 51xxxxx*\n\n` +
             `Si no eliges slot, el bot usa el primer espacio libre.\n` +
-            `En este chat: ${chatStatus}`,
-          ...global.channelInfo,
-        },
+            `En este chat: ${chatStatus}`
+        ),
         quoted
       );
     }
@@ -339,18 +340,17 @@ export default {
 
     return sock.sendMessage(
       from,
-      {
-        text:
-          `*${header}*\n\n` +
+      buildSubbotMediaMessage(
+        "subbotcodigo.png",
+        `*${header}*\n\n` +
           `Bot: *${result.displayName}*\n` +
           `Numero: *${result.number}*\n` +
           `Solicitante: *${targetNumber}*\n` +
           `Codigo: *${result.code}*\n` +
           `Expira aprox: *${formatDuration(result.expiresInMs)}*\n` +
           `En este chat: ${chatStatus}\n\n` +
-          `Abre WhatsApp > Dispositivos vinculados > Vincular con numero de telefono.`,
-        ...global.channelInfo,
-      },
+          `Abre WhatsApp > Dispositivos vinculados > Vincular con numero de telefono.`
+      ),
       quoted
     );
   },

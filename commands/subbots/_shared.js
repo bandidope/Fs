@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 export function getPrefix(settings) {
   if (Array.isArray(settings?.prefix)) {
     return settings.prefix.find((value) => String(value || "").trim()) || ".";
@@ -107,44 +110,61 @@ export function getSubbotStateLabel(bot) {
   return "RESERVADO";
 }
 
-function getSubbotCompactLines(bot) {
-  const lines = [
-    `[ SLOT ${bot.slot} ] ${getSubbotStateLabel(bot)}`,
-    `Bot: ${bot.displayName}`,
-  ];
+export function getSubbotStatusTone(bot) {
+  if (bot.connected) return "ACTIVO";
+  if (bot.connecting) return "CONECTANDO";
+  if (bot.pairingPending) return "EN ESPERA";
+  if (bot.registered) return "VINCULADO";
+  if (!bot.enabled) return "LIBRE";
+  return "RESERVADO";
+}
 
+export function getSubbotActivityText(bot) {
   if (bot.connected) {
-    lines.push(`Tiempo activo: ${formatDuration(bot.connectedForMs || 0)}`);
-    lines.push(`Conectado desde: ${formatMoment(bot.connectedAt, "Sin conexion activa")}`);
-    return lines;
+    return formatDuration(bot.connectedForMs || 0);
   }
 
   if (bot.connecting) {
-    lines.push("Tiempo activo: iniciando conexion");
-    lines.push(`Solicitud: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`);
-    return lines;
+    return "iniciando";
   }
 
   if (bot.pairingPending) {
-    lines.push("Tiempo activo: esperando vinculacion");
+    return "esperando codigo";
+  }
+
+  if (bot.registered) {
+    return "sin conexion ahora";
+  }
+
+  if (!bot.enabled) {
+    return "libre";
+  }
+
+  return "reservado";
+}
+
+function getSubbotCompactLines(bot) {
+  const lines = [
+    `[${bot.slot}] ${bot.label || `SUBBOT${bot.slot}`} | ${getSubbotStatusTone(bot)}`,
+    `Bot: ${bot.displayName}`,
+    `Tiempo: ${getSubbotActivityText(bot)}`,
+  ];
+
+  if (bot.connected) {
+    lines.push(`Desde: ${formatMoment(bot.connectedAt, "Sin conexion activa")}`);
+    return lines;
+  }
+
+  if (bot.pairingPending || bot.connecting || (!bot.connected && bot.requestedAt)) {
     lines.push(`Solicitud: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`);
     return lines;
   }
 
-  if (bot.registered) {
-    lines.push("Tiempo activo: no activo ahora");
+  if (bot.lastDisconnectAt) {
     lines.push(`Ultima salida: ${formatMoment(bot.lastDisconnectAt, "Sin desconexion reciente")}`);
     return lines;
   }
 
-  if (!bot.enabled) {
-    lines.push("Tiempo activo: libre para usar");
-    lines.push("Solicitud: sin reserva actual");
-    return lines;
-  }
-
-  lines.push("Tiempo activo: reservado");
-  lines.push(`Solicitud: ${formatMoment(bot.requestedAt, "Sin solicitud reciente")}`);
   return lines;
 }
 
@@ -157,7 +177,8 @@ export function buildSubbotCard(bot, options = {}) {
   }
 
   const lines = [
-    `[ PANEL SLOT ${bot.slot} ] ${getSubbotStateLabel(bot)}`,
+    `Slot: ${bot.slot}`,
+    `Estado: ${getSubbotStatusTone(bot)}`,
     `Bot: ${bot.displayName}`,
     `Label: ${bot.label || `SUBBOT${bot.slot}`}`,
     `Tiempo activo: ${bot.connected ? formatDuration(bot.connectedForMs || 0) : "No activo ahora"}`,
@@ -248,4 +269,21 @@ export function hasSubbotRuntime(runtime) {
 
 export function getSubbotQuoted(msg) {
   return msg?.key ? { quoted: msg } : undefined;
+}
+
+export function buildSubbotMediaMessage(fileName, caption) {
+  const imagePath = path.join(process.cwd(), "imagenes", fileName);
+
+  if (fs.existsSync(imagePath)) {
+    return {
+      image: fs.readFileSync(imagePath),
+      caption,
+      ...global.channelInfo,
+    };
+  }
+
+  return {
+    text: caption,
+    ...global.channelInfo,
+  };
 }
