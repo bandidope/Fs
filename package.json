@@ -1,6 +1,7 @@
 {
   "name": "dvyer-bot",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
   "main": "index.js",
   "repository": {
@@ -11,13 +12,11 @@
     "start": "node index.js",
     "check": "node --check index.js",
     "smoke": "node scripts/smoke-check.mjs",
-    "pm2:auto:start": "pm2 start ecosystem.config.cjs",
-    "pm2:auto:restart": "pm2 restart ecosystem.config.cjs",
-    "pm2:split:start": "pm2 start ecosystem.config.cjs",
-    "pm2:split:restart": "pm2 restart ecosystem.config.cjs"
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:restart": "pm2 restart ecosystem.config.cjs"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "npm:wileys@latest",
+    "@dvyer/baileys": "github:DevYerZx/Baileys-dvvyerMD#main",
     "axios": "^1.6.0",
     "chalk": "^4.1.2",
     "dotenv": "^16.4.7",
