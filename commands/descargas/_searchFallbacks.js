@@ -15,15 +15,25 @@ function absoluteTikwmUrl(value = "") {
 }
 
 function mapLegacyTikTokItem(item = {}) {
+  const authorData = item?.author && typeof item.author === "object" ? item.author : {};
+
   return {
     id: String(item.id || item.aweme_id || item.video_id || item.play || ""),
     title: cleanText(item.title || item.desc || "Video TikTok"),
-    author: cleanText(item?.author?.unique_id || item?.author || "usuario").toLowerCase(),
+    author: cleanText(authorData.unique_id || item?.author || "usuario").toLowerCase(),
     play: absoluteTikwmUrl(item.play || item.video || item.url || ""),
     cover: absoluteTikwmUrl(item.cover || item.origin_cover || item.thumbnail || ""),
+    durationSeconds: Number(
+      item.duration ||
+      item.video_duration ||
+      item?.music_info?.duration ||
+      0
+    ),
+    region: cleanText(item.region || authorData.region || ""),
     stats: {
       likes: Number(item.digg_count || item.likes || 0),
       comments: Number(item.comment_count || item.comments || 0),
+      shares: Number(item.share_count || item.shares || 0),
       views: Number(item.play_count || item.views || 0),
     },
     source: "legacy",
@@ -31,15 +41,25 @@ function mapLegacyTikTokItem(item = {}) {
 }
 
 function mapTikwmItem(item = {}) {
+  const authorData = item?.author && typeof item.author === "object" ? item.author : {};
+
   return {
     id: String(item.id || item.video_id || item.play || ""),
     title: cleanText(item.title || item.content_desc?.join(" ") || "Video TikTok"),
-    author: cleanText(item?.author?.unique_id || "usuario").toLowerCase(),
+    author: cleanText(authorData.unique_id || "usuario").toLowerCase(),
     play: absoluteTikwmUrl(item.play || ""),
     cover: absoluteTikwmUrl(item.cover || ""),
+    durationSeconds: Number(
+      item.duration ||
+      item.video_duration ||
+      item?.music_info?.duration ||
+      0
+    ),
+    region: cleanText(item.region || authorData.region || ""),
     stats: {
       likes: Number(item.digg_count || 0),
       comments: Number(item.comment_count || 0),
+      shares: Number(item.share_count || 0),
       views: Number(item.play_count || 0),
     },
     source: "tikwm",

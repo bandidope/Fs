@@ -27,6 +27,20 @@ function compactNumber(value = 0) {
   return String(Math.floor(n));
 }
 
+function formatDurationSeconds(value = 0) {
+  const seconds = Number(value || 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "N/D";
+  if (seconds < 60) return `${Math.floor(seconds)} segundos`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = Math.floor(seconds % 60);
+  return rem > 0 ? `${minutes}m ${rem}s` : `${minutes}m`;
+}
+
+function normalizeRegion(value = "") {
+  const region = String(value || "").trim().toUpperCase();
+  return region || "N/D";
+}
+
 function buildTikTokPublicUrl(item = {}) {
   const author = String(item?.author || "").replace(/^@/, "").trim();
   const id = String(item?.id || "").trim();
@@ -59,55 +73,52 @@ function buildSections(results, prefix) {
   ];
 }
 
-function buildCardButtons(item, sections, prefix) {
+function buildCardButtons(item, prefix) {
   const play = String(item?.play || "").trim();
-  const quickReplyId = `${prefix}tiktok ${play}`;
-  const publicUrl = buildTikTokPublicUrl(item);
+  const publicUrl = buildTikTokPublicUrl(item) || play;
+  const copyCode = play ? `${prefix}tiktok ${play}` : publicUrl;
 
-  const buttons = [
-    {
-      name: "quick_reply",
-      buttonParamsJson: JSON.stringify({
-        display_text: "Descargar",
-        id: quickReplyId,
-      }),
-    },
+  return [
     {
       name: "cta_copy",
       buttonParamsJson: JSON.stringify({
-        display_text: "Copiar enlace",
-        copy_code: play,
-      }),
-    },
-    {
-      name: "single_select",
-      buttonParamsJson: JSON.stringify({
-        title: "Lista de resultados",
-        sections,
+        display_text: "Copy",
+        copy_code: copyCode,
       }),
     },
   ];
-
-  if (publicUrl) {
-    buttons.push({
-      name: "cta_url",
-      buttonParamsJson: JSON.stringify({
-        display_text: "Abrir en TikTok",
-        url: publicUrl,
-      }),
-    });
-  }
-
-  return buttons;
 }
 
-function buildCarouselCards(results, prefix, sections, mode = "video") {
+function buildDetailedCardBody(item, index, query) {
+  const title = clipText(item?.title || "Sin titulo", 220);
+  const author = String(item?.author || "usuario").replace(/^@/, "");
+  const likes = Number(item?.stats?.likes || 0);
+  const comments = Number(item?.stats?.comments || 0);
+  const shares = Number(item?.stats?.shares || 0);
+  const views = Number(item?.stats?.views || 0);
+  const duration = formatDurationSeconds(item?.durationSeconds || 0);
+  const region = normalizeRegion(item?.region || "");
+  const publicUrl = buildTikTokPublicUrl(item) || String(item?.play || "").trim() || "N/D";
+
+  return (
+    `Resultados para: ${clipText(query, 60)}\n` +
+    `TikTok - Resultado\n` +
+    `➠ Video: ${index + 1}\n` +
+    `➠ Titulo: ${title}\n` +
+    `➠ Duracion: ${duration}\n` +
+    `➠ Region: ${region}\n` +
+    `➠ Autor: ${author}\n` +
+    `➠ Likes: ${likes}\n` +
+    `➠ Comentarios: ${comments}\n` +
+    `➠ Shares: ${shares}\n` +
+    `➠ Reproducciones: ${views}\n` +
+    `➠ URL: ${publicUrl}\n\n` +
+    `Usa el boton para descargar/ver`
+  );
+}
+
+function buildCarouselCards(results, prefix, query, mode = "video") {
   return results.map((item, index) => {
-    const title = clipText(item?.title || `Video TikTok ${index + 1}`, 72);
-    const author = String(item?.author || "usuario").replace(/^@/, "");
-    const views = compactNumber(item?.stats?.views || 0);
-    const likes = compactNumber(item?.stats?.likes || 0);
-    const comments = compactNumber(item?.stats?.comments || 0);
     const play = String(item?.play || "").trim();
     const cover = String(item?.cover || "").trim() || DEFAULT_CAROUSEL_COVER;
     const mediaPayload =
@@ -117,25 +128,24 @@ function buildCarouselCards(results, prefix, sections, mode = "video") {
 
     return {
       ...mediaPayload,
-      title,
-      body: `@${author}\n👁️ ${views} | ❤️ ${likes} | 💬 ${comments}`,
-      footer: "FSOCIETY BOT • TikTok",
-      buttons: buildCardButtons(item, sections, prefix),
+      title: "TikTok - Resultado",
+      body: buildDetailedCardBody(item, index, query),
+      footer: "FSOCIETY BOT",
+      buttons: buildCardButtons(item, prefix),
     };
   });
 }
 
 async function sendCarouselResults(sock, from, quoted, query, results, prefix) {
-  const sections = buildSections(results, prefix);
   const basePayload = {
-    text: `Resultados para: ${clipText(query, 80)}`,
-    footer: "Toca una tarjeta para descargar",
-    title: "TikTok Search",
+    text: "TikTok-Buscador ««┐",
+    footer: `Resultados para: ${clipText(query, 80)}`,
+    title: "FSOCIETY BOT",
     ...global.channelInfo,
   };
 
   try {
-    const videoCards = buildCarouselCards(results, prefix, sections, "video");
+    const videoCards = buildCarouselCards(results, prefix, query, "video");
     await sock.sendMessage(
       from,
       {
@@ -149,7 +159,7 @@ async function sendCarouselResults(sock, from, quoted, query, results, prefix) {
     console.error("ttsearch video carousel fallback:", videoError?.message || videoError);
   }
 
-  const imageCards = buildCarouselCards(results, prefix, sections, "image");
+  const imageCards = buildCarouselCards(results, prefix, query, "image");
   await sock.sendMessage(
     from,
     {
