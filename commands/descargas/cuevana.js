@@ -1,7 +1,19 @@
-import { buildDvyerUrl } from "../../lib/api-manager.js";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import axios from "axios";
+import { pipeline } from "stream/promises";
+import { randomUUID } from "crypto";
+import { getDvyerBaseUrl } from "../../lib/api-manager.js";
 
 const RESULT_LIMIT = 10;
 const DEFAULT_TIMEOUT_MS = 20000;
+const LEGACY_DVYER_BASE_URL = "https://dv-yer-api.online";
+const PREFERRED_DVYER_BASE_URL = "https://dvyer-api.onrender.com";
+const TMP_DIR = path.join(os.tmpdir(), "dvyer-cuevana");
+const MAX_VIDEO_BYTES = 120 * 1024 * 1024;
+const VIDEO_AS_DOCUMENT_THRESHOLD = 60 * 1024 * 1024;
+const MIN_FILE_BYTES = 20000;
 
 function getPrefix(settings) {
   if (Array.isArray(settings?.prefix)) {
@@ -16,8 +28,24 @@ function clipText(value = "", max = 72) {
   return `${clean.slice(0, Math.max(1, max - 3))}...`;
 }
 
+function apiBaseLabel() {
+  const configured = String(getDvyerBaseUrl() || "")
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (!configured || configured === LEGACY_DVYER_BASE_URL) {
+    return PREFERRED_DVYER_BASE_URL;
+  }
+
+  return configured;
+}
+
 function buildApiUrl(endpoint, params = {}) {
-  const url = new URL(buildDvyerUrl(endpoint));
+  const base = apiBaseLabel();
+  const suffix = String(endpoint || "").trim();
+  const full =
+    !suffix ? base : suffix.startsWith("/") ? `${base}${suffix}` : `${base}/${suffix}`;
+  const url = new URL(full);
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null || value === "") continue;
     url.searchParams.set(key, String(value));
@@ -45,6 +73,115 @@ async function fetchJson(url, timeoutMs = DEFAULT_TIMEOUT_MS) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function safeFileName(value = "") {
+  return String(value || "")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseFileNameFromDisposition(value = "") {
+  const text = String(value || "");
+  const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(text);
+  if (utfMatch?.[1]) {
+    try {
+      return decodeURIComponent(utfMatch[1]);
+    } catch {}
+  }
+  const match = /filename="?([^\";]+)"?/i.exec(text);
+  return match?.[1] || "";
+}
+
+async function downloadVideo(url, title = "cuevana") {
+  if (!fs.existsSync(TMP_DIR)) {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  }
+
+  const tempName = `${Date.now()}-${randomUUID()}.mp4`;
+  const tempPath = path.join(TMP_DIR, tempName);
+
+  const response = await axios.get(url, {
+    responseType: "stream",
+    timeout: DEFAULT_TIMEOUT_MS * 6,
+    maxRedirects: 5,
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+      Accept: "*/*",
+      Referer: `${apiBaseLabel()}/`,
+    },
+    validateStatus: () => true,
+  });
+
+  if (response.status >= 400) {
+    throw new Error(`Error al descargar: HTTP ${response.status}`);
+  }
+
+  const contentLength = Number(response.headers?.["content-length"] || 0);
+  if (contentLength && contentLength > MAX_VIDEO_BYTES) {
+    throw new Error("El video es demasiado grande para enviarlo por WhatsApp.");
+  }
+
+  let downloaded = 0;
+  response.data.on("data", (chunk) => {
+    downloaded += chunk.length;
+    if (downloaded > MAX_VIDEO_BYTES) {
+      response.data.destroy(new Error("El video es demasiado grande para enviarlo por WhatsApp."));
+    }
+  });
+
+  try {
+    await pipeline(response.data, fs.createWriteStream(tempPath));
+  } catch (error) {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    throw error;
+  }
+
+  if (!fs.existsSync(tempPath)) {
+    throw new Error("No se pudo guardar el video.");
+  }
+
+  const size = fs.statSync(tempPath).size;
+  if (!size || size < MIN_FILE_BYTES) {
+    fs.unlinkSync(tempPath);
+    throw new Error("El archivo descargado es invalido.");
+  }
+
+  const rawName = parseFileNameFromDisposition(response.headers?.["content-disposition"]) || `${title}.mp4`;
+  const fileName = safeFileName(rawName.endsWith(".mp4") ? rawName : `${rawName}.mp4`) || "cuevana.mp4";
+
+  return { filePath: tempPath, fileName, size };
+}
+
+async function sendVideoMessage(sock, from, quoted, info) {
+  if (info.size > VIDEO_AS_DOCUMENT_THRESHOLD) {
+    await sock.sendMessage(
+      from,
+      {
+        document: { url: info.filePath },
+        mimetype: "video/mp4",
+        fileName: info.fileName,
+        caption: `*FSOCIETY BOT*\n\n🎬 ${info.title || "Cuevana"}\n📦 Enviado como documento`,
+        ...global.channelInfo,
+      },
+      quoted
+    );
+    return;
+  }
+
+  await sock.sendMessage(
+    from,
+    {
+      video: { url: info.filePath },
+      mimetype: "video/mp4",
+      fileName: info.fileName,
+      caption: `*FSOCIETY BOT*\n\n🎬 ${info.title || "Cuevana"}`,
+      ...global.channelInfo,
+    },
+    quoted
+  );
 }
 
 async function downloadImageBuffer(url) {
@@ -138,16 +275,42 @@ export default {
         );
       }
       const apiLink = buildApiUrl("/cuevana/download", { url: rawUrl, lang: "lat" });
-      return conn.sendMessage(
+
+      await conn.sendMessage(
         from,
         {
-          text:
-            `*FSOCIETY BOT*\n\n` +
-            `Enlace directo de descarga:\n${apiLink}`,
+          text: "*FSOCIETY BOT*\n\nDescargando video, espera un momento...",
           ...global.channelInfo,
         },
         quoted
       );
+
+      let downloaded;
+      try {
+        downloaded = await downloadVideo(apiLink, "cuevana-video");
+      } catch (error) {
+        console.error("Cuevana download error:", error?.message || error);
+        return conn.sendMessage(
+          from,
+          {
+            text: `No pude descargar el video.\n${error?.message || error}`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      try {
+        await sendVideoMessage(conn, from, quoted, {
+          ...downloaded,
+          title: "Cuevana",
+        });
+      } finally {
+        if (downloaded?.filePath && fs.existsSync(downloaded.filePath)) {
+          fs.unlinkSync(downloaded.filePath);
+        }
+      }
+      return;
     }
 
     if (cmd === "cuevanadl") {
