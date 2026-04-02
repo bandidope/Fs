@@ -1095,7 +1095,7 @@ export default {
     "ffestado",
     "ffcerrar",
   ],
-  category: "juegos",
+  category: "freefire",
   description: "Organiza torneos y VS de clanes de Free Fire en grupos",
   groupOnly: true,
 

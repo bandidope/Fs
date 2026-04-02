@@ -44,6 +44,7 @@ function getCategoryIcon(category = "") {
     descarga: "📥",
     descargas: "📥",
     economia: "💰",
+    freefire: "🔥",
     grupo: "🛡️",
     juegos: "🎮",
     menu: "📜",
