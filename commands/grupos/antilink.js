@@ -33,10 +33,23 @@ function safeParse(raw) {
 
 function normalizeConfig(value = {}) {
   const source = value && typeof value === "object" ? value : {};
+  const hasTypedFlags =
+    Object.prototype.hasOwnProperty.call(source, "blockWhatsappGroups") ||
+    Object.prototype.hasOwnProperty.call(source, "blockWhatsappChannels") ||
+    Object.prototype.hasOwnProperty.call(source, "blockOtherLinks");
+  const allowWhatsappLegacy = source.allowWhatsapp !== false;
+
   return {
     enabled: source.enabled === true,
     mode: String(source.mode || "kick").trim().toLowerCase() === "delete" ? "delete" : "kick",
-    allowWhatsapp: source.allowWhatsapp !== false,
+    allowWhatsapp: allowWhatsappLegacy,
+    blockWhatsappGroups: hasTypedFlags
+      ? source.blockWhatsappGroups !== false
+      : !allowWhatsappLegacy,
+    blockWhatsappChannels: hasTypedFlags
+      ? source.blockWhatsappChannels !== false
+      : !allowWhatsappLegacy,
+    blockOtherLinks: source.blockOtherLinks !== false,
     whitelist: Array.isArray(source.whitelist)
       ? source.whitelist.map((item) => normalizeDomain(item)).filter(Boolean)
       : [],
@@ -75,35 +88,92 @@ function getGroupConfig(groupId) {
   const key = String(groupId || "").trim();
   if (!store[key]) {
     store[key] = normalizeConfig();
+  } else {
+    store[key] = normalizeConfig(store[key]);
   }
   return store[key];
 }
 
+function getPrefixes(settings) {
+  if (Array.isArray(settings?.prefix)) {
+    return settings.prefix
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+  }
+
+  const single = String(settings?.prefix || ".").trim();
+  return single ? [single] : ["."];
+}
+
+function getPrimaryPrefix(settings) {
+  return getPrefixes(settings)[0] || ".";
+}
+
 function extractLinks(text = "") {
   const matches = String(text || "").match(
-    /((?:https?:\/\/|www\.)[^\s]+|chat\.whatsapp\.com\/[^\s]+|wa\.me\/[^\s]+)/gi
+    /((?:https?:\/\/|www\.)[^\s]+|chat\.whatsapp\.com\/[^\s]+|whatsapp\.com\/channel\/[^\s]+|wa\.me\/[^\s]+)/gi
   );
 
   return (matches || []).map((value) => {
     const raw = String(value || "").trim();
     const normalized = normalizeDomain(raw);
-    const isWhatsapp =
-      normalized.includes("chat.whatsapp.com") || normalized.startsWith("wa.me");
+    const lowerRaw = raw.toLowerCase();
+    const isWhatsappGroup =
+      lowerRaw.includes("chat.whatsapp.com/") || normalized.includes("chat.whatsapp.com");
+    const isWhatsappChannel = lowerRaw.includes("whatsapp.com/channel/");
+    const linkType = isWhatsappGroup
+      ? "wa_group"
+      : isWhatsappChannel
+        ? "wa_channel"
+        : "other";
 
     return {
       raw,
       domain: normalized,
-      isWhatsapp,
+      type: linkType,
     };
   });
 }
 
-function isAllowedLink(link, config) {
+function isTypeBlocked(link, config) {
+  if (link?.type === "wa_group") return config.blockWhatsappGroups === true;
+  if (link?.type === "wa_channel") return config.blockWhatsappChannels === true;
+  return config.blockOtherLinks === true;
+}
+
+function isAllowedLink(link, config = {}) {
   if (!link?.domain) return true;
-  if (link.isWhatsapp && config.allowWhatsapp) return true;
+  if (!isTypeBlocked(link, config)) return true;
   return config.whitelist.some(
     (domain) => link.domain === domain || link.domain.endsWith(`.${domain}`)
   );
+}
+
+function formatToggle(value) {
+  return value ? "BLOQUEADO 🚫" : "PERMITIDO ✅";
+}
+
+function parseToggle(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["on", "activar", "bloquear", "1", "si"].includes(normalized)) return true;
+  if (["off", "desactivar", "permitir", "0", "no"].includes(normalized)) return false;
+  if (["toggle", "cambiar", "switch"].includes(normalized)) return null;
+  return undefined;
+}
+
+function resolveFilterTarget(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["grupo", "grupos", "group", "groups", "wa", "whatsapp"].includes(normalized)) {
+    return "groups";
+  }
+  if (["canal", "canales", "channel", "channels", "wachannel", "wacanal"].includes(normalized)) {
+    return "channels";
+  }
+  if (["otros", "other", "others", "externos", "links", "enlaces"].includes(normalized)) {
+    return "others";
+  }
+  return "";
 }
 
 let store = loadStore();
@@ -116,9 +186,10 @@ export default {
   category: "grupo",
   description: "Protege grupos contra links con whitelist y modos configurables",
 
-  async run({ sock, from, args = [], msg }) {
+  async run({ sock, from, args = [], msg, settings }) {
     const quoted = msg?.key ? { quoted: msg } : undefined;
     const config = getGroupConfig(from);
+    const prefix = getPrimaryPrefix(settings);
     const action = String(args[0] || "status").trim().toLowerCase();
     const value = String(args.slice(1).join(" ") || "").trim();
 
@@ -130,18 +201,101 @@ export default {
             `*ANTILINK*\n\n` +
             `Estado: *${config.enabled ? "ON" : "OFF"}*\n` +
             `Modo: *${config.mode.toUpperCase()}*\n` +
-            `WhatsApp links: *${config.allowWhatsapp ? "PERMITIDOS" : "BLOQUEADOS"}*\n` +
+            `Grupos WhatsApp: *${formatToggle(config.blockWhatsappGroups)}*\n` +
+            `Canales WhatsApp: *${formatToggle(config.blockWhatsappChannels)}*\n` +
+            `Otros enlaces: *${formatToggle(config.blockOtherLinks)}*\n` +
             `Whitelist: ${config.whitelist.length ? config.whitelist.join(", ") : "vacia"}\n\n` +
             `Uso:\n` +
-            `.antilink on\n` +
-            `.antilink off\n` +
-            `.antilink mode delete\n` +
-            `.antilink mode kick\n` +
-            `.antilink allow whatsapp\n` +
-            `.antilink deny whatsapp\n` +
-            `.antilink allow youtube.com\n` +
-            `.antilink remove youtube.com\n` +
-            `.antilink list`,
+            `${prefix}antilink on\n` +
+            `${prefix}antilink off\n` +
+            `${prefix}antilink mode delete\n` +
+            `${prefix}antilink mode kick\n` +
+            `${prefix}antilink tipo grupos on|off\n` +
+            `${prefix}antilink tipo canales on|off\n` +
+            `${prefix}antilink tipo otros on|off\n` +
+            `${prefix}antilink allow youtube.com\n` +
+            `${prefix}antilink remove youtube.com\n` +
+            `${prefix}antilink list`,
+          footer: "Selecciona desde el panel para cambiar rapido",
+          interactiveButtons: [
+            {
+              name: "single_select",
+              buttonParamsJson: JSON.stringify({
+                title: "Panel AntiLink",
+                sections: [
+                  {
+                    title: "Estado general",
+                    rows: [
+                      {
+                        header: "ON",
+                        title: "Activar AntiLink",
+                        description: "Enciende proteccion de enlaces.",
+                        id: `${prefix}antilink on`,
+                      },
+                      {
+                        header: "OFF",
+                        title: "Desactivar AntiLink",
+                        description: "Apaga proteccion de enlaces.",
+                        id: `${prefix}antilink off`,
+                      },
+                    ],
+                  },
+                  {
+                    title: "Sancion",
+                    rows: [
+                      {
+                        header: "DELETE",
+                        title: "Modo borrar mensaje",
+                        description: "Borra el mensaje con enlace.",
+                        id: `${prefix}antilink mode delete`,
+                      },
+                      {
+                        header: "KICK",
+                        title: "Modo expulsar usuario",
+                        description: "Expulsa si bot es admin.",
+                        id: `${prefix}antilink mode kick`,
+                      },
+                    ],
+                  },
+                  {
+                    title: "Tipos de enlace",
+                    rows: [
+                      {
+                        header: "WA GRUPOS",
+                        title: config.blockWhatsappGroups
+                          ? "Permitir enlaces de grupos WhatsApp"
+                          : "Bloquear enlaces de grupos WhatsApp",
+                        description: config.blockWhatsappGroups
+                          ? "Actualmente: bloqueado"
+                          : "Actualmente: permitido",
+                        id: `${prefix}antilink tipo grupos ${config.blockWhatsappGroups ? "off" : "on"}`,
+                      },
+                      {
+                        header: "WA CANALES",
+                        title: config.blockWhatsappChannels
+                          ? "Permitir enlaces de canales WhatsApp"
+                          : "Bloquear enlaces de canales WhatsApp",
+                        description: config.blockWhatsappChannels
+                          ? "Actualmente: bloqueado"
+                          : "Actualmente: permitido",
+                        id: `${prefix}antilink tipo canales ${config.blockWhatsappChannels ? "off" : "on"}`,
+                      },
+                      {
+                        header: "OTROS LINKS",
+                        title: config.blockOtherLinks
+                          ? "Permitir otros enlaces"
+                          : "Bloquear otros enlaces",
+                        description: config.blockOtherLinks
+                          ? "Actualmente: bloqueado"
+                          : "Actualmente: permitido",
+                        id: `${prefix}antilink tipo otros ${config.blockOtherLinks ? "off" : "on"}`,
+                      },
+                    ],
+                  },
+                ],
+              }),
+            },
+          ],
           ...global.channelInfo,
         },
         quoted
@@ -203,11 +357,13 @@ export default {
       const target = String(args[1] || "").trim().toLowerCase();
       if (target === "whatsapp" || target === "wa") {
         config.allowWhatsapp = true;
+        config.blockWhatsappGroups = false;
+        config.blockWhatsappChannels = false;
         saveStore();
         return sock.sendMessage(
           from,
           {
-            text: "Los enlaces de WhatsApp quedaron permitidos.",
+            text: "Los enlaces de WhatsApp (grupos y canales) quedaron permitidos.",
             ...global.channelInfo,
           },
           quoted
@@ -246,16 +402,145 @@ export default {
       const target = String(args[1] || "").trim().toLowerCase();
       if (target === "whatsapp" || target === "wa") {
         config.allowWhatsapp = false;
+        config.blockWhatsappGroups = true;
+        config.blockWhatsappChannels = true;
         saveStore();
         return sock.sendMessage(
           from,
           {
-            text: "Los enlaces de WhatsApp quedaron bloqueados.",
+            text: "Los enlaces de WhatsApp (grupos y canales) quedaron bloqueados.",
             ...global.channelInfo,
           },
           quoted
         );
       }
+    }
+
+    if (action === "tipo" || action === "filtro" || action === "filtros") {
+      const target = resolveFilterTarget(args[1]);
+      const toggle = parseToggle(args[2]);
+
+      if (!target) {
+        return sock.sendMessage(
+          from,
+          {
+            text:
+              `Usa:\n` +
+              `${prefix}antilink tipo grupos on|off\n` +
+              `${prefix}antilink tipo canales on|off\n` +
+              `${prefix}antilink tipo otros on|off`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (toggle === undefined) {
+        return sock.sendMessage(
+          from,
+          {
+            text: "Usa: on o off",
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (target === "groups") {
+        config.blockWhatsappGroups = toggle === null ? !config.blockWhatsappGroups : toggle;
+        config.allowWhatsapp = !(config.blockWhatsappGroups || config.blockWhatsappChannels);
+        saveStore();
+        return sock.sendMessage(
+          from,
+          {
+            text: `Grupos de WhatsApp: *${formatToggle(config.blockWhatsappGroups)}*`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (target === "channels") {
+        config.blockWhatsappChannels = toggle === null ? !config.blockWhatsappChannels : toggle;
+        config.allowWhatsapp = !(config.blockWhatsappGroups || config.blockWhatsappChannels);
+        saveStore();
+        return sock.sendMessage(
+          from,
+          {
+            text: `Canales de WhatsApp: *${formatToggle(config.blockWhatsappChannels)}*`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      config.blockOtherLinks = toggle === null ? !config.blockOtherLinks : toggle;
+      saveStore();
+      return sock.sendMessage(
+        from,
+        {
+          text: `Otros enlaces: *${formatToggle(config.blockOtherLinks)}*`,
+          ...global.channelInfo,
+        },
+        quoted
+      );
+    }
+
+    // Alias cortos para filtros:
+    if (["grupos", "grupo", "canales", "canal", "otros", "other"].includes(action)) {
+      const target =
+        action.startsWith("grupo") ? "groups" : action.startsWith("canal") ? "channels" : "others";
+      const toggle = parseToggle(args[1]);
+
+      if (toggle === undefined) {
+        return sock.sendMessage(
+          from,
+          {
+            text: "Usa: on o off",
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (target === "groups") {
+        config.blockWhatsappGroups = toggle === null ? !config.blockWhatsappGroups : toggle;
+        config.allowWhatsapp = !(config.blockWhatsappGroups || config.blockWhatsappChannels);
+        saveStore();
+        return sock.sendMessage(
+          from,
+          {
+            text: `Grupos de WhatsApp: *${formatToggle(config.blockWhatsappGroups)}*`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (target === "channels") {
+        config.blockWhatsappChannels = toggle === null ? !config.blockWhatsappChannels : toggle;
+        config.allowWhatsapp = !(config.blockWhatsappGroups || config.blockWhatsappChannels);
+        saveStore();
+        return sock.sendMessage(
+          from,
+          {
+            text: `Canales de WhatsApp: *${formatToggle(config.blockWhatsappChannels)}*`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      config.blockOtherLinks = toggle === null ? !config.blockOtherLinks : toggle;
+      saveStore();
+      return sock.sendMessage(
+        from,
+        {
+          text: `Otros enlaces: *${formatToggle(config.blockOtherLinks)}*`,
+          ...global.channelInfo,
+        },
+        quoted
+      );
     }
 
     if (action === "remove" || action === "del") {
