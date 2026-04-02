@@ -7261,11 +7261,13 @@ async function iniciarInstanciaBot(config) {
           resetPairingCache(botState);
           botState.pairingCommandHintShown = false;
           scheduleProfileApply(botState, botState.sock);
-          logBotEvent(
-            botState,
-            "success",
-            `Ya conectado bot ${resolveConfiguredBotName(config)}`
-          );
+          if (botState.config?.id === "main") {
+            logBotEvent(
+              botState,
+              "success",
+              `Ya conectado bot ${resolveConfiguredBotName(config)}`
+            );
+          }
           writePersistedBotRuntimeState(botState);
 
           if (botState.config?.id === "main") {
