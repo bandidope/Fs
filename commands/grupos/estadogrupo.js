@@ -38,18 +38,21 @@ export default {
   run: async ({ sock, msg, from }) => {
     const welcomeFile = path.join(DB_DIR, "welcome.json");
     const modoAdmiFile = path.join(DB_DIR, "modoadmi.json");
+    const botOffFile = path.join(DB_DIR, "botoff_groups.json");
     const antilinkFile = path.join(DB_DIR, "antilink.json");
     const antispamFile = path.join(DB_DIR, "antispam.json");
     const antiInsultosFile = path.join(DB_DIR, "antiinsultos_groups.json");
 
     const welcomeSet = readSetFromFile(welcomeFile);
     const modoAdmiSet = readSetFromFile(modoAdmiFile);
+    const botOffSet = readSetFromFile(botOffFile);
     const antilinkSet = readSetFromFile(antilinkFile);
     const antispamSet = readSetFromFile(antispamFile);
     const antiInsultosSet = readSetFromFile(antiInsultosFile);
 
     const welcomeOn = welcomeSet.has(from);
     const modoAdmiOn = modoAdmiSet.has(from);
+    const botOffOn = botOffSet.has(from);
 
     const antilinkExists = fs.existsSync(antilinkFile);
     const antilinkLabel = antilinkExists
@@ -63,6 +66,7 @@ export default {
       `🧩 *ESTADO DEL GRUPO*\n\n` +
       `• Welcome: ${onOff(welcomeOn)}\n` +
       `• ModoAdmin: ${onOff(modoAdmiOn)}\n` +
+      `• BotOff: ${onOff(botOffOn)}\n` +
       `• Antilink: ${antilinkLabel}\n` +
       `• Antispam: ${onOff(antispamOn)}\n` +
       `• Anti-Insultos: ${onOff(antiInsultosOn)}\n\n` +
