@@ -13,17 +13,79 @@ if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
+function getPrefix(settings) {
+  if (Array.isArray(settings?.prefix)) {
+    return settings.prefix.find((value) => String(value || "").trim()) || ".";
+  }
+  return String(settings?.prefix || ".").trim() || ".";
+}
+
+function createDefaultConfig() {
+  return {
+    enabled: false,
+    welcomeEnabled: false,
+    byeEnabled: false,
+    text: "",
+    byeText: "",
+    rules: "",
+    image: "",
+  };
+}
+
+function normalizeConfig(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const welcomeEnabled = source.enabled === true || source.welcomeEnabled === true;
+  const byeEnabled =
+    source.byeEnabled === true ||
+    source.goodbyeEnabled === true ||
+    source.leaveEnabled === true;
+
+  return {
+    enabled: welcomeEnabled,
+    welcomeEnabled,
+    byeEnabled,
+    text: String(source.text || "").trim().slice(0, 700),
+    byeText: String(source.byeText || source.goodbyeText || "").trim().slice(0, 700),
+    rules: String(source.rules || "").trim().slice(0, 700),
+    image: String(source.image || "").trim(),
+  };
+}
+
+function safeParse(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "string" ? JSON.parse(parsed) : parsed;
+  } catch {
+    return null;
+  }
+}
+
 function readStore() {
   try {
     if (!fs.existsSync(FILE)) return {};
-    const parsed = JSON.parse(fs.readFileSync(FILE, "utf-8"));
+    const parsed = safeParse(fs.readFileSync(FILE, "utf-8"));
     if (!parsed || typeof parsed !== "object") return {};
 
     if (Array.isArray(parsed)) {
-      return Object.fromEntries(parsed.map((groupId) => [groupId, { enabled: true }]));
+      return Object.fromEntries(
+        parsed.map((groupId) => [
+          String(groupId),
+          normalizeConfig({ enabled: true, welcomeEnabled: true }),
+        ])
+      );
     }
 
-    return parsed;
+    return Object.fromEntries(
+      Object.entries(parsed).map(([groupId, config]) => {
+        if (typeof config === "boolean") {
+          return [
+            groupId,
+            normalizeConfig({ enabled: config, welcomeEnabled: config }),
+          ];
+        }
+        return [groupId, normalizeConfig(config)];
+      })
+    );
   } catch {
     return {};
   }
@@ -33,74 +95,183 @@ function saveStore(store) {
   fs.writeFileSync(FILE, JSON.stringify(store, null, 2));
 }
 
-function getConfig(groupId) {
-  const store = readStore();
-  if (!store[groupId]) {
-    store[groupId] = {
-      enabled: false,
-      text: "",
-      rules: "",
-      image: "",
-    };
-    saveStore(store);
+function getConfig(groupId, store) {
+  const source = store || readStore();
+  const key = String(groupId || "").trim();
+  if (!source[key]) {
+    source[key] = createDefaultConfig();
+    saveStore(source);
+  } else {
+    source[key] = normalizeConfig(source[key]);
   }
-  return store[groupId];
+  return source[key];
 }
 
-function getPrefix(settings) {
-  if (Array.isArray(settings?.prefix)) {
-    return settings.prefix.find((value) => String(value || "").trim()) || ".";
-  }
-  return String(settings?.prefix || ".").trim() || ".";
+function boolLabel(value) {
+  return value ? "ON ✅" : "OFF ❌";
 }
 
-async function fetchImageBuffer(url = "") {
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-    },
-  });
+function buildStatusText(config, prefix) {
+  return (
+    `╭──〔 🌸 *WELCOME & BYE FSOCIETY* 〕──⬣\n` +
+    `│ Bienvenida: *${boolLabel(config.welcomeEnabled)}*\n` +
+    `│ Despedida: *${boolLabel(config.byeEnabled)}*\n` +
+    `│ Imagen: *${config.image ? "CONFIGURADA" : "AUTO FOTO GRUPO"}*\n` +
+    `│ Texto Welcome: *${config.text ? "SI" : "NO"}*\n` +
+    `│ Texto Bye: *${config.byeText ? "SI" : "NO"}*\n` +
+    `│ Reglas: *${config.rules ? "SI" : "NO"}*\n` +
+    `╰────────────⬣\n\n` +
+    `Comandos:\n` +
+    `${prefix}welcome on\n` +
+    `${prefix}welcome off\n` +
+    `${prefix}welcome bye on\n` +
+    `${prefix}welcome bye off\n` +
+    `${prefix}welcome text Bienvenido a la familia\n` +
+    `${prefix}welcome byetext Gracias por estar aqui\n` +
+    `${prefix}welcome rules Respeta | No spam | Lee fijados\n` +
+    `${prefix}welcome image https://...\n` +
+    `${prefix}welcome reset`
+  );
+}
 
-  if (!response.ok) {
-    throw new Error(`No pude descargar la imagen (${response.status}).`);
-  }
+async function getGroupImageUrl(sock, groupId, fallbackImage = "") {
+  try {
+    const groupImage = await sock.profilePictureUrl(groupId, "image");
+    if (groupImage) return groupImage;
+  } catch {}
 
-  return Buffer.from(await response.arrayBuffer());
+  const fallback = String(fallbackImage || "").trim();
+  if (/^https?:\/\//i.test(fallback)) return fallback;
+  return "";
+}
+
+function buildWelcomeMessage({
+  userTag,
+  groupName,
+  totalMembers,
+  botName,
+  customText,
+  rules,
+  prefix,
+}) {
+  const mainText = customText || `Bienvenido a *${groupName}*`;
+  const rulesBlock = rules ? `\n\n📜 *REGLAS*\n${rules}` : "";
+
+  return (
+    `╭──〔 🌸 *BIENVENIDA FSOCIETY* 〕──⬣\n` +
+    `│ Hola ${userTag}\n` +
+    `│ Grupo: *${groupName}*\n` +
+    `│ Miembro #: *${Math.max(1, totalMembers)}*\n` +
+    `│ Bot: *${botName}*\n` +
+    `╰────────────⬣\n\n` +
+    `${mainText}` +
+    `${rulesBlock}\n\n` +
+    `Comandos utiles:\n` +
+    `${prefix}menu | ${prefix}owner | ${prefix}infochannel`
+  );
+}
+
+function buildByeMessage({
+  userTag,
+  groupName,
+  totalMembers,
+  botName,
+  byeText,
+  prefix,
+}) {
+  const mainText = byeText || `${userTag} salio del grupo.`;
+
+  return (
+    `╭──〔 👋 *DESPEDIDA FSOCIETY* 〕──⬣\n` +
+    `│ Grupo: *${groupName}*\n` +
+    `│ Miembros ahora: *${Math.max(0, totalMembers)}*\n` +
+    `│ Bot: *${botName}*\n` +
+    `╰────────────⬣\n\n` +
+    `${mainText}\n\n` +
+    `Comandos utiles:\n` +
+    `${prefix}reglas | ${prefix}infochannel`
+  );
 }
 
 export default {
   name: "welcome",
-  command: ["welcome"],
+  command: ["welcome", "bienvenida", "despedida"],
   groupOnly: true,
   adminOnly: true,
   category: "grupo",
-  description: "Bienvenida premium con imagen, reglas y texto personalizado",
+  description: "Bienvenida y despedida con diseno, botones y foto del grupo",
 
   async run({ sock, from, args = [], msg, settings }) {
     const quoted = msg?.key ? { quoted: msg } : undefined;
     const store = readStore();
-    const config = getConfig(from);
+    const config = getConfig(from, store);
     const action = String(args[0] || "status").trim().toLowerCase();
     const value = String(args.slice(1).join(" ") || "").trim();
     const prefix = getPrefix(settings);
 
-    if (!args.length || action === "status") {
+    if (!args.length || ["status", "estado", "menu"].includes(action)) {
       return sock.sendMessage(
         from,
         {
-          text:
-            `*WELCOME PREMIUM*\n\n` +
-            `Estado: *${config.enabled ? "ON" : "OFF"}*\n` +
-            `Imagen: *${config.image ? "CONFIGURADA" : "NO"}*\n` +
-            `Reglas: *${config.rules ? "SI" : "NO"}*\n` +
-            `Texto custom: *${config.text ? "SI" : "NO"}*\n\n` +
-            `${prefix}welcome on\n` +
-            `${prefix}welcome off\n` +
-            `${prefix}welcome text Bienvenido a nuestro grupo\n` +
-            `${prefix}welcome rules Nada de spam | Respeta | Lee fijados\n` +
-            `${prefix}welcome image https://...\n` +
-            `${prefix}welcome reset`,
+          text: buildStatusText(config, prefix),
+          title: "FSOCIETY BOT",
+          subtitle: "Panel Welcome & Bye",
+          footer: "Selecciona una opcion",
+          interactiveButtons: [
+            {
+              name: "single_select",
+              buttonParamsJson: JSON.stringify({
+                title: "Configurar Welcome/Bye",
+                sections: [
+                  {
+                    title: "Bienvenida",
+                    rows: [
+                      {
+                        header: "WELCOME ON",
+                        title: "Activar bienvenida",
+                        description: "Envia mensaje cuando entra alguien.",
+                        id: `${prefix}welcome on`,
+                      },
+                      {
+                        header: "WELCOME OFF",
+                        title: "Desactivar bienvenida",
+                        description: "Apaga mensaje de entrada.",
+                        id: `${prefix}welcome off`,
+                      },
+                    ],
+                  },
+                  {
+                    title: "Despedida",
+                    rows: [
+                      {
+                        header: "BYE ON",
+                        title: "Activar despedida",
+                        description: "Envia mensaje cuando alguien sale.",
+                        id: `${prefix}welcome bye on`,
+                      },
+                      {
+                        header: "BYE OFF",
+                        title: "Desactivar despedida",
+                        description: "Apaga mensaje de salida.",
+                        id: `${prefix}welcome bye off`,
+                      },
+                    ],
+                  },
+                  {
+                    title: "Estado",
+                    rows: [
+                      {
+                        header: "STATUS",
+                        title: "Ver estado actual",
+                        description: "Muestra configuracion de welcome/bye.",
+                        id: `${prefix}welcome status`,
+                      },
+                    ],
+                  },
+                ],
+              }),
+            },
+          ],
           ...global.channelInfo,
         },
         quoted
@@ -108,12 +279,12 @@ export default {
     }
 
     if (action === "on") {
-      store[from] = { ...config, enabled: true };
+      store[from] = { ...config, enabled: true, welcomeEnabled: true };
       saveStore(store);
       return sock.sendMessage(
         from,
         {
-          text: "Welcome premium activado.",
+          text: "✅ Bienvenida activada.",
           ...global.channelInfo,
         },
         quoted
@@ -121,12 +292,63 @@ export default {
     }
 
     if (action === "off") {
-      store[from] = { ...config, enabled: false };
+      store[from] = { ...config, enabled: false, welcomeEnabled: false };
       saveStore(store);
       return sock.sendMessage(
         from,
         {
-          text: "Welcome premium desactivado.",
+          text: "✅ Bienvenida desactivada.",
+          ...global.channelInfo,
+        },
+        quoted
+      );
+    }
+
+    if (["bye", "despedida", "leave"].includes(action)) {
+      const subAction = String(args[1] || "").trim().toLowerCase();
+      if (!subAction || ["status", "estado"].includes(subAction)) {
+        return sock.sendMessage(
+          from,
+          {
+            text:
+              `Despedida actual: *${boolLabel(config.byeEnabled)}*\n` +
+              `Usa: ${prefix}welcome bye on | ${prefix}welcome bye off`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (subAction === "on") {
+        store[from] = { ...config, byeEnabled: true };
+        saveStore(store);
+        return sock.sendMessage(
+          from,
+          {
+            text: "✅ Despedida activada.",
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      if (subAction === "off") {
+        store[from] = { ...config, byeEnabled: false };
+        saveStore(store);
+        return sock.sendMessage(
+          from,
+          {
+            text: "✅ Despedida desactivada.",
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
+      return sock.sendMessage(
+        from,
+        {
+          text: `Usa: ${prefix}welcome bye on | ${prefix}welcome bye off`,
           ...global.channelInfo,
         },
         quoted
@@ -134,12 +356,25 @@ export default {
     }
 
     if (action === "text") {
-      store[from] = { ...config, text: value.slice(0, 400) };
+      store[from] = { ...config, text: value.slice(0, 700) };
       saveStore(store);
       return sock.sendMessage(
         from,
         {
-          text: "Texto de bienvenida actualizado.",
+          text: "✅ Texto de bienvenida actualizado.",
+          ...global.channelInfo,
+        },
+        quoted
+      );
+    }
+
+    if (action === "byetext" || action === "despedidatext") {
+      store[from] = { ...config, byeText: value.slice(0, 700) };
+      saveStore(store);
+      return sock.sendMessage(
+        from,
+        {
+          text: "✅ Texto de despedida actualizado.",
           ...global.channelInfo,
         },
         quoted
@@ -147,12 +382,12 @@ export default {
     }
 
     if (action === "rules") {
-      store[from] = { ...config, rules: value.slice(0, 400) };
+      store[from] = { ...config, rules: value.slice(0, 700) };
       saveStore(store);
       return sock.sendMessage(
         from,
         {
-          text: "Reglas de bienvenida actualizadas.",
+          text: "✅ Reglas de bienvenida actualizadas.",
           ...global.channelInfo,
         },
         quoted
@@ -165,7 +400,7 @@ export default {
       return sock.sendMessage(
         from,
         {
-          text: "Imagen de bienvenida guardada.",
+          text: "✅ Imagen guardada (se usa como respaldo si falla la foto del grupo).",
           ...global.channelInfo,
         },
         quoted
@@ -173,17 +408,12 @@ export default {
     }
 
     if (action === "reset") {
-      store[from] = {
-        enabled: false,
-        text: "",
-        rules: "",
-        image: "",
-      };
+      store[from] = createDefaultConfig();
       saveStore(store);
       return sock.sendMessage(
         from,
         {
-          text: "Welcome premium reiniciado.",
+          text: "✅ Welcome & Bye reiniciado.",
           ...global.channelInfo,
         },
         quoted
@@ -193,7 +423,7 @@ export default {
     return sock.sendMessage(
       from,
       {
-        text: "Opcion invalida. Usa .welcome status para ver la ayuda.",
+        text: `❌ Opcion invalida.\nUsa: ${prefix}welcome`,
         ...global.channelInfo,
       },
       quoted
@@ -201,10 +431,15 @@ export default {
   },
 
   async onGroupUpdate({ sock, update, settings }) {
-    if (!update?.id || update.action !== "add") return;
+    if (!update?.id) return;
 
-    const config = getConfig(update.id);
-    if (!config.enabled) return;
+    const action = String(update.action || "").trim().toLowerCase();
+    if (!["add", "remove"].includes(action)) return;
+
+    const store = readStore();
+    const config = getConfig(update.id, store);
+    if (action === "add" && !config.welcomeEnabled) return;
+    if (action === "remove" && !config.byeEnabled) return;
 
     let metadata = null;
     try {
@@ -214,44 +449,46 @@ export default {
     const groupName = metadata?.subject || "Grupo";
     const totalMembers = Array.isArray(metadata?.participants) ? metadata.participants.length : 0;
     const botName = String(settings?.botName || "Bot").trim() || "Bot";
+    const prefix = getPrefix(settings);
+    const imageUrl = await getGroupImageUrl(sock, update.id, config.image);
 
     for (const participant of update.participants || []) {
       const metadataParticipant = findGroupParticipant(metadata || {}, [participant]);
       const mentionJid = getParticipantMentionJid(metadata || {}, metadataParticipant, participant);
       const userTag = getParticipantDisplayTag(metadataParticipant, participant);
-      const customText = config.text
-        ? `\n\n${config.text}`
-        : `\n\nBienvenido a *${groupName}*.`;
-      const rulesBlock = config.rules
-        ? `\n\n*REGLAS RAPIDAS*\n${config.rules}`
-        : "";
-      const caption =
-        `*WELCOME PREMIUM*\n\n` +
-        `Hola ${userTag}\n` +
-        `Grupo: *${groupName}*\n` +
-        `Miembro #: *${Math.max(1, totalMembers)}*\n` +
-        `Bot activo: *${botName}*` +
-        `${customText}` +
-        `${rulesBlock}\n\n` +
-        `Comandos utiles:\n` +
-        `${getPrefix(settings)}menu\n` +
-        `${getPrefix(settings)}owner`;
 
-      if (config.image) {
-        try {
-          const imageBuffer = await fetchImageBuffer(config.image);
-          await sock.sendMessage(update.id, {
-            image: imageBuffer,
-            caption,
-            mentions: mentionJid ? [mentionJid] : [],
-            ...global.channelInfo,
-          });
-          continue;
-        } catch {}
+      const text =
+        action === "add"
+          ? buildWelcomeMessage({
+              userTag,
+              groupName,
+              totalMembers,
+              botName,
+              customText: config.text,
+              rules: config.rules,
+              prefix,
+            })
+          : buildByeMessage({
+              userTag,
+              groupName,
+              totalMembers,
+              botName,
+              byeText: config.byeText,
+              prefix,
+            });
+
+      if (imageUrl) {
+        await sock.sendMessage(update.id, {
+          image: { url: imageUrl },
+          caption: text,
+          mentions: mentionJid ? [mentionJid] : [],
+          ...global.channelInfo,
+        });
+        continue;
       }
 
       await sock.sendMessage(update.id, {
-        text: caption,
+        text,
         mentions: mentionJid ? [mentionJid] : [],
         ...global.channelInfo,
       });

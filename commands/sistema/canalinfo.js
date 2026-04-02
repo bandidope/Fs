@@ -134,7 +134,7 @@ function resolveSenderNumber({ sender = "", msg = {}, from = "" } = {}) {
 
 export default {
   name: "canalinfo",
-  command: ["canalinfo", "channelinfo", "newsletterinfo", "jidlid", "lids", "lid", "mylid"],
+  command: ["canalinfo", "infochannel", "channelinfo", "newsletterinfo", "jidlid", "lids", "lid", "mylid"],
   category: "herramientas",
   description: "Obtiene JID/LID de canal por enlace o convierte numero a JID/LID",
 

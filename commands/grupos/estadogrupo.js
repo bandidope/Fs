@@ -18,7 +18,24 @@ function readSetFromFile(filePath) {
     if (!fs.existsSync(filePath)) return new Set();
     const raw = fs.readFileSync(filePath, "utf-8");
     const data = safeJsonParse(raw);
-    return new Set(Array.isArray(data) ? data : []);
+    if (Array.isArray(data)) {
+      return new Set(data);
+    }
+
+    if (data && typeof data === "object") {
+      const enabledKeys = Object.entries(data)
+        .filter(([, value]) => {
+          if (typeof value === "boolean") return value;
+          if (!value || typeof value !== "object") return false;
+          if (value.enabled === true) return true;
+          if (value.welcomeEnabled === true) return true;
+          return false;
+        })
+        .map(([groupId]) => groupId);
+      return new Set(enabledKeys);
+    }
+
+    return new Set();
   } catch {
     return new Set();
   }
