@@ -63,8 +63,8 @@ async function checkApiHealth() {
 }
 
 export default {
-  name: "healthbot",
-  command: ["healthbot", "health", "bothealth"],
+  name: "saludbot",
+  command: ["saludbot", "salud", "estadosalud", "healthbot", "health", "bothealth"],
   category: "sistema",
   description: "Chequea salud del bot, API, latencia, memoria y subbots.",
 
@@ -91,7 +91,7 @@ export default {
 
     const healthIcon = healthColor(level);
     const statusText =
-      `╭──〔 ${healthIcon} *HEALTH BOT* 〕──⬣\n` +
+      `╭──〔 ${healthIcon} *SALUD DEL BOT* 〕──⬣\n` +
       `│ Semaforo: *${healthIcon} ${level.toUpperCase()}*\n` +
       `│ Uptime: *${formatDuration(uptimeMs)}*\n` +
       `│ API: *${api.ok ? `OK (${api.statusCode})` : "DOWN"}*\n` +
@@ -114,7 +114,7 @@ export default {
           {
             name: "single_select",
             buttonParamsJson: JSON.stringify({
-              title: "Opciones Health",
+              title: "Opciones de salud",
               sections: [
                 {
                   title: "Diagnostico",
@@ -123,7 +123,7 @@ export default {
                       header: "REFRESH",
                       title: "Actualizar estado",
                       description: "Vuelve a medir API, latencia y memoria.",
-                      id: `${prefix}healthbot`,
+                      id: `${prefix}saludbot`,
                     },
                     {
                       header: "CONTROL",

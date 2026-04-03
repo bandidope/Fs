@@ -85,8 +85,8 @@ function badge(value) {
 }
 
 export default {
-  name: "gpanel",
-  command: ["gpanel", "panelgrupo", "adminpanel"],
+  name: "panelgrupo",
+  command: ["panelgrupo", "paneladmin", "gpanel", "adminpanel"],
   category: "grupo",
   description: "Panel admin unico del grupo con botones de control.",
   groupOnly: true,
@@ -178,7 +178,7 @@ export default {
           },
           {
             header: "PANEL WELCOME",
-            title: "Abrir ajustes welcome/bye",
+            title: "Abrir ajustes bienvenida/despedida",
             description: "Edita textos, reglas e imagen.",
             id: `${prefix}welcome`,
           },
@@ -191,13 +191,13 @@ export default {
       {
         text: panelText,
         title: "FSOCIETY BOT",
-        subtitle: "Panel Admin Grupo",
+        subtitle: "Panel de administracion del grupo",
         footer: "Selecciona una accion",
         interactiveButtons: [
           {
             name: "single_select",
             buttonParamsJson: JSON.stringify({
-              title: "Abrir GPANEL",
+              title: "Abrir panel de grupo",
               sections,
             }),
           },
