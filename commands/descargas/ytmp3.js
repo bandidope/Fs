@@ -25,6 +25,8 @@ const AUDIO_SOURCES = [
 
 const COOLDOWN_TIME = 0;
 const AUDIO_QUALITY = "128k";
+const AUDIO_LINK_QUALITIES = ["128k", "48k"];
+const LINK_FAST_ENABLED = true;
 const AUDIO_MP3_PREFERRED_WAIT_MS = 1200;
 const REQUEST_TIMEOUT = 120000;
 const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
@@ -461,29 +463,52 @@ async function resolveSearch(query) {
 
 async function requestAudioLink(videoUrl, endpointUrl, sourceLabel, options = {}) {
   const signal = options?.signal || null;
+  const qualityCandidates = Array.from(
+    new Set(
+      [AUDIO_QUALITY, ...AUDIO_LINK_QUALITIES]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
 
   const { data, downloadUrl } = await withRetries(
     async () => {
-      const apiData = await apiGet(
-        endpointUrl,
-        {
-          mode: "link",
-          quality: AUDIO_QUALITY,
-          url: videoUrl,
-        },
-        45000,
-        options
-      );
+      let lastQualityError = null;
 
-      const resolvedUrl = normalizeApiUrl(pickApiDownloadUrl(apiData));
-      if (!resolvedUrl) {
-        throw new Error(`internal link error: no se encontro un formato audio disponible (${sourceLabel})`);
+      for (const quality of qualityCandidates) {
+        try {
+          const apiData = await apiGet(
+            endpointUrl,
+            {
+              mode: "link",
+              fast: LINK_FAST_ENABLED ? "true" : "false",
+              quality,
+              url: videoUrl,
+            },
+            45000,
+            options
+          );
+
+          const resolvedUrl = normalizeApiUrl(pickApiDownloadUrl(apiData));
+          if (!resolvedUrl) {
+            throw new Error(
+              `internal link error: no se encontro un formato audio disponible (${sourceLabel}:${quality})`
+            );
+          }
+
+          return {
+            data: apiData,
+            downloadUrl: resolvedUrl,
+          };
+        } catch (error) {
+          lastQualityError = error;
+        }
       }
 
-      return {
-        data: apiData,
-        downloadUrl: resolvedUrl,
-      };
+      throw (
+        lastQualityError ||
+        new Error(`internal link error: no se encontro un formato audio disponible (${sourceLabel})`)
+      );
     },
     {
       attempts: REQUEST_RETRY_ATTEMPTS,

@@ -25,6 +25,8 @@ const VIDEO_SOURCES = [
 
 const COOLDOWN_TIME = 0;
 const VIDEO_QUALITY = "360p";
+const VIDEO_LINK_QUALITIES = ["360p", "240p", "144p"];
+const LINK_FAST_ENABLED = true;
 const REQUEST_TIMEOUT = 120000;
 const MAX_VIDEO_BYTES = 1500 * 1024 * 1024;
 const VIDEO_AS_DOCUMENT_THRESHOLD = 70 * 1024 * 1024;
@@ -354,29 +356,52 @@ async function resolveSearch(query) {
 
 async function requestVideoLink(videoUrl, endpointUrl, sourceLabel, options = {}) {
   const signal = options?.signal || null;
+  const qualityCandidates = Array.from(
+    new Set(
+      [VIDEO_QUALITY, ...VIDEO_LINK_QUALITIES]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
 
   const { data, downloadUrl } = await withRetries(
     async () => {
-      const apiData = await apiGet(
-        endpointUrl,
-        {
-          mode: "link",
-          quality: VIDEO_QUALITY,
-          url: videoUrl,
-        },
-        45000,
-        options
-      );
+      let lastQualityError = null;
 
-      const resolvedUrl = normalizeApiUrl(pickApiDownloadUrl(apiData));
-      if (!resolvedUrl) {
-        throw new Error(`internal link error: no se encontro un formato video disponible (${sourceLabel})`);
+      for (const quality of qualityCandidates) {
+        try {
+          const apiData = await apiGet(
+            endpointUrl,
+            {
+              mode: "link",
+              fast: LINK_FAST_ENABLED ? "true" : "false",
+              quality,
+              url: videoUrl,
+            },
+            45000,
+            options
+          );
+
+          const resolvedUrl = normalizeApiUrl(pickApiDownloadUrl(apiData));
+          if (!resolvedUrl) {
+            throw new Error(
+              `internal link error: no se encontro un formato video disponible (${sourceLabel}:${quality})`
+            );
+          }
+
+          return {
+            data: apiData,
+            downloadUrl: resolvedUrl,
+          };
+        } catch (error) {
+          lastQualityError = error;
+        }
       }
 
-      return {
-        data: apiData,
-        downloadUrl: resolvedUrl,
-      };
+      throw (
+        lastQualityError ||
+        new Error(`internal link error: no se encontro un formato video disponible (${sourceLabel})`)
+      );
     },
     {
       attempts: REQUEST_RETRY_ATTEMPTS,

@@ -86,6 +86,30 @@ function extractApiError(data, status) {
   );
 }
 
+function normalizeApiUrl(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("/")) return `${API_BASE}${value}`;
+  return `${API_BASE}/${value}`;
+}
+
+function pickApiDownloadUrl(data) {
+  return (
+    data?.download_url_full ||
+    data?.stream_url_full ||
+    data?.download_url ||
+    data?.stream_url ||
+    data?.url ||
+    data?.result?.download_url_full ||
+    data?.result?.stream_url_full ||
+    data?.result?.download_url ||
+    data?.result?.stream_url ||
+    data?.result?.url ||
+    ""
+  );
+}
+
 function extractTextFromMessage(message) {
   return (
     message?.text ||
@@ -231,6 +255,7 @@ async function requestTikTokMeta(videoUrl, qualityHint) {
       return {
         title,
         fileName,
+        downloadUrl: normalizeApiUrl(pickApiDownloadUrl(data)),
       };
     } catch (error) {
       lastError = error?.message || "Error desconocido";
@@ -241,23 +266,19 @@ async function requestTikTokMeta(videoUrl, qualityHint) {
   throw new Error(lastError);
 }
 
-async function downloadTikTokViaApi(videoUrl, fileName, qualityHint) {
+async function downloadTikTokViaApi(videoUrl, fileName, qualityHint, directUrl = "") {
   const finalName = normalizeMp4Name(fileName || "tiktok.mp4");
   const tempPath = path.join(
     TMP_DIR,
     `${TMP_FILE_PREFIX}${Date.now()}-${randomUUID()}-${finalName}`
   );
 
-  const response = await axios.get(API_TIKTOK_URL, {
+  const normalizedDirectUrl = normalizeApiUrl(directUrl);
+  const requestUrl = normalizedDirectUrl || API_TIKTOK_URL;
+  const requestConfig = {
     responseType: "stream",
     timeout: REQUEST_TIMEOUT,
     maxRedirects: 5,
-    params: {
-      mode: "file",
-      quality: qualityHint,
-      lang: API_LANG,
-      url: videoUrl,
-    },
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
@@ -265,7 +286,18 @@ async function downloadTikTokViaApi(videoUrl, fileName, qualityHint) {
       Referer: `${API_BASE}/`,
     },
     validateStatus: () => true,
-  });
+  };
+
+  if (!normalizedDirectUrl) {
+    requestConfig.params = {
+      mode: "file",
+      quality: qualityHint,
+      lang: API_LANG,
+      url: videoUrl,
+    };
+  }
+
+  const response = await axios.get(requestUrl, requestConfig);
 
   if (response.status >= 400) {
     const errorText = await readStreamToText(response.data).catch(() => "");
@@ -441,7 +473,12 @@ export default {
       );
 
       const meta = await requestTikTokMeta(videoUrl, qualityHint);
-      const downloaded = await downloadTikTokViaApi(videoUrl, meta.fileName, qualityHint);
+      const downloaded = await downloadTikTokViaApi(
+        videoUrl,
+        meta.fileName,
+        qualityHint,
+        meta.downloadUrl
+      );
       tempPath = downloaded.tempPath;
 
       await sendTikTokVideo(sock, from, quoted, {
