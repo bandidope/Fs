@@ -9,17 +9,14 @@ import { spawn } from "child_process";
 // Configuración
 const API_BASE_URL = "https://dv-yer-api.online";
 const API_SPOTIFY_PATH = "/spotify";
-const SPOTIFY_WEB_BASE = "https://open.spotify.com";
 const TMP_DIR = path.join(os.tmpdir(), "spotify-downloads");
 const AUDIO_QUALITY = "128k";
 const REQUEST_TIMEOUT = 120000;
 const MAX_AUDIO_BYTES = 120 * 1024 * 1024;
 const AUDIO_AS_DOCUMENT_THRESHOLD = 60 * 1024 * 1024;
 
-// Cooldown para evitar abuso
 const cooldowns = new Map();
 
-// Crear directorio temporal
 if (!fs.existsSync(TMP_DIR)) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 }
@@ -59,15 +56,6 @@ function normalizeAudioFileName(name, fallbackBase = "spotify", fallbackExt = "m
   return `${base}.${ext}`;
 }
 
-function extractApiError(data, status) {
-  return (
-    data?.detail ||
-    data?.error?.message ||
-    data?.message ||
-    (status ? `HTTP ${status}` : "Error de API")
-  );
-}
-
 function getCooldownRemaining(untilMs) {
   return Math.max(0, Math.ceil((untilMs - Date.now()) / 1000));
 }
@@ -100,14 +88,54 @@ function extractSpotifyEntityType(value) {
 }
 
 function resolveUserInput(ctx) {
-  const msg = ctx.m || ctx.msg || null;
-  const argsText = Array.isArray(ctx.args) ? ctx.args.join(" ").trim() : "";
-  const quotedMessage = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage || null;
-  const quotedText = quotedMessage?.extendedTextMessage?.text || 
-                     quotedMessage?.imageMessage?.caption || 
-                     quotedMessage?.videoMessage?.caption || 
-                     "";
-  return argsText || quotedText || "";
+  try {
+    // Buscar en diferentes lugares del contexto
+    let text = "";
+
+    // Desde args
+    if (ctx.args && Array.isArray(ctx.args) && ctx.args.length > 0) {
+      text = ctx.args.join(" ").trim();
+      if (text) return text;
+    }
+
+    // Desde mensaje directo
+    const msg = ctx.m || ctx.msg;
+    if (msg) {
+      // Texto simple
+      if (msg.text) return msg.text.trim();
+      
+      // Mensaje extendido
+      if (msg.message?.extendedTextMessage?.text) {
+        return msg.message.extendedTextMessage.text.trim();
+      }
+
+      // Conversación simple
+      if (msg.message?.conversation) {
+        return msg.message.conversation.trim();
+      }
+
+      // Campo conversation directo
+      if (msg.conversation) {
+        return msg.conversation.trim();
+      }
+    }
+
+    // Desde quoted message
+    const quoted = ctx.quoted || msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+    if (quoted) {
+      if (quoted.extendedTextMessage?.text) {
+        return quoted.extendedTextMessage.text.trim();
+      }
+      if (quoted.conversation) {
+        return quoted.conversation.trim();
+      }
+    }
+
+    return "";
+  } catch (error) {
+    console.error("Error resolviendo input:", error.message);
+    return "";
+  }
 }
 
 function getPrefix(settings) {
@@ -134,7 +162,6 @@ function detectAudioFormat(filePath) {
 
     const slice = buffer.subarray(0, bytesRead);
 
-    // Detectar MP3
     if (slice.length >= 3 && slice.subarray(0, 3).toString("ascii") === "ID3") {
       return { ext: "mp3", mimetype: "audio/mpeg", isMp3: true };
     }
@@ -143,16 +170,16 @@ function detectAudioFormat(filePath) {
       return { ext: "mp3", mimetype: "audio/mpeg", isMp3: true };
     }
 
-    // Detectar M4A
     if (slice.length >= 8 && slice.subarray(4, 8).toString("ascii") === "ftyp") {
       return { ext: "m4a", mimetype: "audio/mp4", isMp3: false };
     }
 
-    // Detectar WebM
     if (slice.length >= 4 && slice[0] === 0x1a && slice[1] === 0x45 && slice[2] === 0xdf && slice[3] === 0xa3) {
       return { ext: "webm", mimetype: "audio/webm", isMp3: false };
     }
-  } catch {}
+  } catch (e) {
+    console.warn("Error detectando formato:", e.message);
+  }
 
   return { ext: "bin", mimetype: "application/octet-stream", isMp3: false };
 }
@@ -161,9 +188,17 @@ function detectAudioFormat(filePath) {
 
 async function searchSpotifyTracks(query, limit = 10) {
   try {
-    const response = await axios.get(API_BASE_URL + API_SPOTIFY_PATH, {
+    const cleanQuery = cleanText(query);
+    
+    if (cleanQuery.length < 2) {
+      throw new Error("La búsqueda debe tener al menos 2 caracteres");
+    }
+
+    console.log(`[SPOTIFY] Buscando: ${cleanQuery}`);
+
+    const response = await axios.get(`${API_BASE_URL}${API_SPOTIFY_PATH}`, {
       params: {
-        q: cleanText(query),
+        q: cleanQuery,
         mode: "search",
         lang: "es",
         limit: Math.min(limit, 20),
@@ -176,16 +211,20 @@ async function searchSpotifyTracks(query, limit = 10) {
       validateStatus: () => true,
     });
 
+    console.log(`[SPOTIFY] Respuesta API - Status: ${response.status}`);
+
     if (response.status >= 400) {
-      throw new Error(
-        cleanText(extractApiError(response.data, response.status)) || "Error al buscar en Spotify"
-      );
+      const errorMsg = response.data?.message || response.data?.error || `HTTP ${response.status}`;
+      throw new Error(`Error en búsqueda: ${errorMsg}`);
     }
 
     const results = response.data?.results || [];
+    
     if (!results.length) {
-      throw new Error("No se encontraron resultados en Spotify");
+      throw new Error("No se encontraron resultados");
     }
+
+    console.log(`[SPOTIFY] Resultados encontrados: ${results.length}`);
 
     return results.map((track, index) => ({
       index: index + 1,
@@ -198,6 +237,7 @@ async function searchSpotifyTracks(query, limit = 10) {
       fileName: track.filename || `${track.title} - ${track.artist}.mp3`,
     }));
   } catch (error) {
+    console.error(`[SPOTIFY] Error en búsqueda:`, error.message);
     throw error;
   }
 }
@@ -206,18 +246,21 @@ async function searchSpotifyTracks(query, limit = 10) {
 
 async function getSpotifyDownloadInfo(input) {
   try {
+    const cleanInput = cleanText(input);
+    console.log(`[SPOTIFY] Obteniendo info para: ${cleanInput}`);
+
     const params = {
       mode: "link",
       lang: "es",
     };
 
-    if (isSpotifyUrl(cleanText(input))) {
-      params.url = cleanText(input);
+    if (isSpotifyUrl(cleanInput)) {
+      params.url = cleanInput;
     } else {
-      params.q = cleanText(input);
+      params.q = cleanInput;
     }
 
-    const response = await axios.get(API_BASE_URL + API_SPOTIFY_PATH, {
+    const response = await axios.get(`${API_BASE_URL}${API_SPOTIFY_PATH}`, {
       params,
       timeout: REQUEST_TIMEOUT,
       headers: {
@@ -227,10 +270,11 @@ async function getSpotifyDownloadInfo(input) {
       validateStatus: () => true,
     });
 
+    console.log(`[SPOTIFY] Respuesta - Status: ${response.status}`);
+
     if (response.status >= 400) {
-      throw new Error(
-        cleanText(extractApiError(response.data, response.status)) || "Error en la API de Spotify"
-      );
+      const errorMsg = response.data?.message || response.data?.error || `HTTP ${response.status}`;
+      throw new Error(`Error API: ${errorMsg}`);
     }
 
     const data = response.data;
@@ -238,23 +282,30 @@ async function getSpotifyDownloadInfo(input) {
     const downloadUrl = selected.download_url_full || selected.download_url || data.download_url_full || data.download_url;
 
     if (!downloadUrl) {
+      console.error("[SPOTIFY] Respuesta API:", JSON.stringify(data, null, 2));
       throw new Error("La API no devolvió enlace de descarga");
     }
 
+    const title = cleanText(selected.title || data.title || "spotify");
+    const artist = cleanText(selected.artist || data.artist || "Spotify");
+
+    console.log(`[SPOTIFY] Info obtenida - ${title} / ${artist}`);
+
     return {
-      title: cleanText(selected.title || data.title || "spotify"),
-      artist: cleanText(selected.artist || data.artist || "Spotify"),
+      title: title,
+      artist: artist,
       duration: selected.duration || data.duration || null,
       thumbnail: selected.thumbnail || data.thumbnail || null,
       spotifyUrl: selected.spotify_url || data.spotify_url || "",
       fileName: normalizeAudioFileName(
-        selected.filename || data.filename || `${selected.title || data.title} - ${selected.artist || data.artist}`,
-        `${selected.title || data.title} - ${selected.artist || data.artist}`,
+        selected.filename || data.filename || `${title} - ${artist}`,
+        `${title} - ${artist}`,
         "mp3"
       ),
       downloadUrl: String(downloadUrl).trim(),
     };
   } catch (error) {
+    console.error(`[SPOTIFY] Error obteniendo info:`, error.message);
     throw error;
   }
 }
@@ -265,6 +316,8 @@ async function downloadAudio(downloadUrl, outputPath, fileName = "spotify.mp3") 
   ensureTmpDir();
 
   try {
+    console.log(`[SPOTIFY] Descargando desde: ${downloadUrl}`);
+
     const response = await axios.get(downloadUrl, {
       responseType: "stream",
       timeout: REQUEST_TIMEOUT,
@@ -277,21 +330,21 @@ async function downloadAudio(downloadUrl, outputPath, fileName = "spotify.mp3") 
     });
 
     if (response.status >= 400) {
-      throw new Error(`Error al descargar: HTTP ${response.status}`);
+      throw new Error(`Error descarga: HTTP ${response.status}`);
     }
 
     const contentLength = Number(response.headers?.["content-length"] || 0);
+    console.log(`[SPOTIFY] Tamaño: ${contentLength} bytes`);
+
     if (contentLength && contentLength > MAX_AUDIO_BYTES) {
-      throw new Error("El audio es demasiado grande para WhatsApp (máx 120MB)");
+      throw new Error(`Audio muy grande: ${Math.round(contentLength / 1024 / 1024)}MB`);
     }
 
     let downloaded = 0;
     response.data.on("data", (chunk) => {
       downloaded += chunk.length;
       if (downloaded > MAX_AUDIO_BYTES) {
-        response.data.destroy(
-          new Error("El audio excede el tamaño máximo permitido")
-        );
+        response.data.destroy(new Error("Archivo excede tamaño máximo"));
       }
     });
 
@@ -304,14 +357,16 @@ async function downloadAudio(downloadUrl, outputPath, fileName = "spotify.mp3") 
     }
 
     const size = fs.statSync(outputPath).size;
+    console.log(`[SPOTIFY] Guardado: ${size} bytes`);
+
     if (!size || size < 50000) {
       deleteFileSafe(outputPath);
-      throw new Error("El archivo descargado es inválido o está vacío");
+      throw new Error("Archivo inválido o muy pequeño");
     }
 
     if (size > MAX_AUDIO_BYTES) {
       deleteFileSafe(outputPath);
-      throw new Error("El audio es demasiado grande");
+      throw new Error("Archivo excede tamaño máximo");
     }
 
     const audioFormat = detectAudioFormat(outputPath);
@@ -325,6 +380,7 @@ async function downloadAudio(downloadUrl, outputPath, fileName = "spotify.mp3") 
       isMp3: audioFormat.isMp3,
     };
   } catch (error) {
+    console.error(`[SPOTIFY] Error descargando:`, error.message);
     deleteFileSafe(outputPath);
     throw error;
   }
@@ -334,6 +390,8 @@ async function downloadAudio(downloadUrl, outputPath, fileName = "spotify.mp3") 
 
 async function convertToMp3(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
+    console.log(`[SPOTIFY] Convirtiendo a MP3...`);
+
     const ffmpeg = spawn("ffmpeg", [
       "-y",
       "-i",
@@ -363,6 +421,7 @@ async function convertToMp3(inputPath, outputPath) {
       if (settled) return;
       settled = true;
       deleteFileSafe(outputPath);
+      console.error(`[SPOTIFY] Error ffmpeg:`, error.message);
       if (error?.code === "ENOENT") {
         reject(new Error("ffmpeg no está instalado"));
         return;
@@ -374,10 +433,11 @@ async function convertToMp3(inputPath, outputPath) {
       if (settled) return;
       settled = true;
       if (code === 0) {
+        console.log(`[SPOTIFY] Conversión completada`);
         resolve();
       } else {
         deleteFileSafe(outputPath);
-        reject(new Error(errorText.trim() || `ffmpeg error code ${code}`));
+        reject(new Error(errorText.trim() || `ffmpeg error ${code}`));
       }
     });
   });
@@ -390,6 +450,8 @@ async function sendSpotifyAudio(sock, from, quoted, { filePath, fileName, mimety
   const shouldSendDocument = forceDocument || size > AUDIO_AS_DOCUMENT_THRESHOLD;
 
   try {
+    console.log(`[SPOTIFY] Enviando como ${shouldSendDocument ? "documento" : "audio"}...`);
+
     if (shouldSendDocument) {
       await sock.sendMessage(
         from,
@@ -397,7 +459,7 @@ async function sendSpotifyAudio(sock, from, quoted, { filePath, fileName, mimety
           document: { url: filePath },
           mimetype: "audio/mpeg",
           fileName,
-          caption: `🎵 *${title}*\n🎤 ${artistLabel}\n\n📦 Enviado como documento`,
+          caption: `🎵 *${title}*\n🎤 ${artistLabel}\n\n📦 Documento`,
           ...global.channelInfo,
         },
         quoted
@@ -418,14 +480,14 @@ async function sendSpotifyAudio(sock, from, quoted, { filePath, fileName, mimety
     );
     return "audio";
   } catch (error) {
-    console.warn("Error enviando audio, intentando como documento:", error.message);
+    console.warn(`[SPOTIFY] Error enviando, intentando como documento:`, error.message);
     await sock.sendMessage(
       from,
       {
         document: { url: filePath },
         mimetype: "audio/mpeg",
         fileName,
-        caption: `🎵 *${title}*\n🎤 ${artistLabel}\n\n📦 Enviado como documento`,
+        caption: `🎵 *${title}*\n🎤 ${artistLabel}\n\n📦 Documento`,
         ...global.channelInfo,
       },
       quoted
@@ -451,7 +513,6 @@ async function sendSpotifySearchPicker(ctx, query, results) {
   }));
 
   try {
-    // Mensaje con imagen si hay thumbnail
     if (results[0]?.thumbnail) {
       try {
         const imgResponse = await axios.get(results[0].thumbnail, { responseType: "arraybuffer" });
@@ -465,23 +526,22 @@ async function sendSpotifySearchPicker(ctx, query, results) {
                 `🔎 Resultados para: *${clipText(query, 80)}*\n` +
                 `📌 Top: *${clipText(results[0].title, 80)}*\n` +
                 `🎤 ${clipText(results[0].artist, 60)}\n\n` +
-                `Selecciona la canción que quieres descargar:`,
+                `Selecciona una canción:`,
               ...global.channelInfo,
             },
             quoted
           );
         }
       } catch (imgError) {
-        console.warn("No se pudo descargar la imagen:", imgError.message);
+        console.warn("Error cargando imagen:", imgError.message);
       }
     }
 
-    // Mensaje interactivo con botones
     const interactivePayload = {
       text: `Resultados para: ${clipText(query, 80)}`,
       title: "🎵 SPOTIFY",
       subtitle: "Elige una canción",
-      footer: "Descargas Spotify",
+      footer: "Descargas",
       interactiveButtons: [
         {
           name: "single_select",
@@ -501,10 +561,10 @@ async function sendSpotifySearchPicker(ctx, query, results) {
     try {
       await sock.sendMessage(from, interactivePayload, quoted);
     } catch (buttonError) {
-      console.warn("Botones no soportados, enviando lista de texto:", buttonError.message);
+      console.warn("Botones no soportados, enviando lista de texto");
       const fallbackText = rows
         .slice(0, 5)
-        .map((row) => `*${row.header}. ${row.title}*\n${row.description}\n${row.id}`)
+        .map((row) => `*${row.header}. ${row.title}*\n${row.id}`)
         .join("\n\n");
 
       await sock.sendMessage(
@@ -512,14 +572,14 @@ async function sendSpotifySearchPicker(ctx, query, results) {
         {
           text:
             `Resultados para: ${clipText(query, 80)}\n\n${fallbackText}\n\n` +
-            `Toca o copia uno de los comandos para descargar.`,
+            `Copia uno de los comandos para descargar.`,
           ...global.channelInfo,
         },
         quoted
       );
     }
   } catch (error) {
-    console.error("Error en search picker:", error.message);
+    console.error("Error en picker:", error.message);
   }
 }
 
@@ -540,8 +600,9 @@ export default {
     let rawAudioPath = null;
     let finalMp3Path = null;
 
-    // Control de cooldown
-    const COOLDOWN_TIME = 3000; // 3 segundos
+    const COOLDOWN_TIME = 3000;
+
+    console.log(`[SPOTIFY] Comando ejecutado por: ${from}`);
 
     if (COOLDOWN_TIME > 0) {
       const until = cooldowns.get(userId);
@@ -549,7 +610,7 @@ export default {
         return sock.sendMessage(
           from,
           {
-            text: `⏳ Espera ${getCooldownRemaining(until)}s antes de usar este comando de nuevo`,
+            text: `⏳ Espera ${getCooldownRemaining(until)}s`,
             ...global.channelInfo,
           },
           quoted
@@ -559,59 +620,52 @@ export default {
     }
 
     try {
-      const userInput = cleanText(resolveUserInput(ctx));
+      const userInput = resolveUserInput(ctx);
 
-      // Validar entrada
+      console.log(`[SPOTIFY] Input recibido: "${userInput}"`);
+
       if (!userInput) {
         cooldowns.delete(userId);
         return sock.sendMessage(
           from,
           {
-            text: `🎵 *Uso del comando Spotify:*\n\n` +
-                  `.spotify canción artista\n` +
-                  `.spotify https://open.spotify.com/track/...\n\n` +
-                  `Ejemplos:\n` +
-                  `.spotify bohemian rhapsody\n` +
-                  `.spotify imagine john lennon`,
+            text: `🎵 *Uso:*\n\n.spotify canción\n.spotify https://open.spotify.com/track/...\n\nEjemplos:\n.spotify bohemian rhapsody\n.spotify imagine john lennon`,
             ...global.channelInfo,
           },
           quoted
         );
       }
 
-      // Validar tipo de entidad
       const spotifyEntityType = extractSpotifyEntityType(userInput);
       if (spotifyEntityType && spotifyEntityType !== "track") {
         cooldowns.delete(userId);
         return sock.sendMessage(
           from,
           {
-            text: "❌ Solo se admiten enlaces de *track* individual o búsqueda por texto",
+            text: "❌ Solo se admiten tracks individuales o búsqueda por texto",
             ...global.channelInfo,
           },
           quoted
         );
       }
 
-      // Validar URL HTTP
       if (isHttpUrl(userInput) && !isSpotifyUrl(userInput)) {
         cooldowns.delete(userId);
         return sock.sendMessage(
           from,
           {
-            text: "❌ Solo aceptamos URLs de Spotify o búsquedas por texto",
+            text: "❌ Solo URLs de Spotify o búsqueda por texto",
             ...global.channelInfo,
           },
           quoted
         );
       }
 
-      // Búsqueda si no es URL
       if (!isSpotifyUrl(userInput)) {
         await sock.sendMessage(
           from,
           {
-            text: `🔎 *Buscando:* ${clipText(userInput, 80)}\n⏳ Por favor espera...`,
+            text: `🔎 Buscando: ${clipText(userInput, 80)}\n⏳ Espera...`,
             ...global.channelInfo,
           },
           quoted
@@ -623,11 +677,10 @@ export default {
         return;
       }
 
-      // Obtener info de descarga
       await sock.sendMessage(
         from,
         {
-          text: `⬇️ *Preparando descarga...*\n⏳ Por favor espera`,
+          text: `⬇️ Preparando...\n⏳ Espera`,
           ...global.channelInfo,
         },
         quoted
@@ -635,7 +688,6 @@ export default {
 
       const info = await getSpotifyDownloadInfo(userInput);
 
-      // Mostrar info
       await sock.sendMessage(
         from,
         info.thumbnail
@@ -645,7 +697,7 @@ export default {
                 `🎵 *${clipText(info.title, 80)}*\n` +
                 `🎤 ${clipText(info.artist, 60)}\n` +
                 `${info.duration ? `⏱ ${info.duration}\n` : ""}` +
-                `⬇️ Descargando audio...`,
+                `⬇️ Descargando...`,
               ...global.channelInfo,
             }
           : {
@@ -653,13 +705,12 @@ export default {
                 `🎵 *${clipText(info.title, 80)}*\n` +
                 `🎤 ${clipText(info.artist, 60)}\n` +
                 `${info.duration ? `⏱ ${info.duration}\n` : ""}` +
-                `⬇️ Descargando audio...`,
+                `⬇️ Descargando...`,
               ...global.channelInfo,
             },
         quoted
       );
 
-      // Descargar audio
       const stamp = Date.now();
       rawAudioPath = path.join(TMP_DIR, `${stamp}-spotify.bin`);
       finalMp3Path = path.join(TMP_DIR, `${stamp}-spotify.mp3`);
@@ -670,7 +721,6 @@ export default {
       let sendMime = downloaded.mimetype;
       let sendName = downloaded.fileName;
 
-      // Convertir a MP3 si es necesario
       if (!downloaded.isMp3) {
         try {
           await convertToMp3(rawAudioPath, finalMp3Path);
@@ -678,11 +728,10 @@ export default {
           sendMime = "audio/mpeg";
           sendName = normalizeAudioFileName(info.fileName, info.title, "mp3");
         } catch (convertError) {
-          console.warn("Conversión a MP3 fallida, enviando archivo original:", convertError.message);
+          console.warn("Conversión fallida, enviando original:", convertError.message);
         }
       }
 
-      // Enviar audio
       const sentAs = await sendSpotifyAudio(sock, from, quoted, {
         filePath: sendPath,
         fileName: sendName,
@@ -695,26 +744,26 @@ export default {
       await sock.sendMessage(
         from,
         {
-          text: `✅ *Descarga completada*\n📦 Enviado como ${sentAs === "audio" ? "audio" : "documento"}`,
+          text: `✅ Descargado como ${sentAs}`,
           ...global.channelInfo,
         },
         quoted
       );
 
     } catch (error) {
-      console.error("SPOTIFY ERROR:", error?.message || error);
+      console.error("SPOTIFY ERROR:", error.message || String(error));
       cooldowns.delete(userId);
 
+      const errorMsg = error?.message || error?.response?.data?.message || String(error) || "Error desconocido";
       await sock.sendMessage(
         from,
         {
-          text: `❌ *Error:*\n${String(error?.message || "No se pudo procesar la descarga")}`,
+          text: `❌ Error: ${errorMsg}`,
           ...global.channelInfo,
         },
         quoted
       );
     } finally {
-      // Limpiar archivos temporales
       deleteFileSafe(rawAudioPath);
       deleteFileSafe(finalMp3Path);
     }
