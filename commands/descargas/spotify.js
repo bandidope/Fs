@@ -1,4 +1,3 @@
-
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -89,38 +88,27 @@ function extractSpotifyEntityType(value) {
 
 function resolveUserInput(ctx) {
   try {
-    // Buscar en diferentes lugares del contexto
     let text = "";
 
-    // Desde args
     if (ctx.args && Array.isArray(ctx.args) && ctx.args.length > 0) {
       text = ctx.args.join(" ").trim();
       if (text) return text;
     }
 
-    // Desde mensaje directo
     const msg = ctx.m || ctx.msg;
     if (msg) {
-      // Texto simple
       if (msg.text) return msg.text.trim();
-      
-      // Mensaje extendido
       if (msg.message?.extendedTextMessage?.text) {
         return msg.message.extendedTextMessage.text.trim();
       }
-
-      // Conversación simple
       if (msg.message?.conversation) {
         return msg.message.conversation.trim();
       }
-
-      // Campo conversation directo
       if (msg.conversation) {
         return msg.conversation.trim();
       }
     }
 
-    // Desde quoted message
     const quoted = ctx.quoted || msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
     if (quoted) {
       if (quoted.extendedTextMessage?.text) {
@@ -196,12 +184,12 @@ async function searchSpotifyTracks(query, limit = 10) {
 
     console.log(`[SPOTIFY] Buscando: ${cleanQuery}`);
 
+    // Usar modo link directamente con q como parámetro
     const response = await axios.get(`${API_BASE_URL}${API_SPOTIFY_PATH}`, {
       params: {
         q: cleanQuery,
-        mode: "search",
-        lang: "es",
-        limit: Math.min(limit, 20),
+        mode: "link",
+        lang: "es3",
       },
       timeout: REQUEST_TIMEOUT,
       headers: {
@@ -213,33 +201,74 @@ async function searchSpotifyTracks(query, limit = 10) {
 
     console.log(`[SPOTIFY] Respuesta API - Status: ${response.status}`);
 
+    if (response.status === 422 || response.status === 400) {
+      // Si falla con q, intentar de otra forma
+      console.log(`[SPOTIFY] Intentando con parámetros alternativos...`);
+      
+      const response2 = await axios.get(`${API_BASE_URL}${API_SPOTIFY_PATH}?q=${encodeURIComponent(cleanQuery)}&mode=link&lang=es3`, {
+        timeout: REQUEST_TIMEOUT,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          Accept: "application/json",
+        },
+        validateStatus: () => true,
+      });
+
+      console.log(`[SPOTIFY] Respuesta 2 - Status: ${response2.status}`);
+
+      if (response2.status >= 400) {
+        console.error(`[SPOTIFY] Error detallado:`, JSON.stringify(response2.data));
+        throw new Error(`Error en búsqueda: HTTP ${response2.status}`);
+      }
+
+      return parseSpotifyResults(response2.data);
+    }
+
     if (response.status >= 400) {
-      const errorMsg = response.data?.message || response.data?.error || `HTTP ${response.status}`;
-      throw new Error(`Error en búsqueda: ${errorMsg}`);
+      console.error(`[SPOTIFY] Error detallado:`, JSON.stringify(response.data));
+      throw new Error(`Error en búsqueda: HTTP ${response.status}`);
     }
 
-    const results = response.data?.results || [];
-    
-    if (!results.length) {
-      throw new Error("No se encontraron resultados");
-    }
+    return parseSpotifyResults(response.data);
 
-    console.log(`[SPOTIFY] Resultados encontrados: ${results.length}`);
-
-    return results.map((track, index) => ({
-      index: index + 1,
-      title: cleanText(track.title || "Sin título"),
-      artist: cleanText(track.artist || "Spotify"),
-      duration: track.duration || "??:??",
-      thumbnail: track.thumbnail || null,
-      spotifyUrl: track.spotify_url || "",
-      downloadUrl: track.download_url_full || track.download_url || "",
-      fileName: track.filename || `${track.title} - ${track.artist}.mp3`,
-    }));
   } catch (error) {
     console.error(`[SPOTIFY] Error en búsqueda:`, error.message);
     throw error;
   }
+}
+
+function parseSpotifyResults(data) {
+  // Manejo flexible de diferentes formatos de respuesta
+  
+  // Formato 1: results array
+  let results = data?.results || [];
+  
+  // Formato 2: selected result
+  if (!results.length && data?.selected) {
+    results = [data.selected];
+  }
+  
+  // Formato 3: todo el objeto es un track
+  if (!results.length && data?.title && data?.artist) {
+    results = [data];
+  }
+
+  if (!results.length) {
+    throw new Error("No se encontraron resultados");
+  }
+
+  console.log(`[SPOTIFY] Resultados encontrados: ${results.length}`);
+
+  return results.slice(0, 10).map((track, index) => ({
+    index: index + 1,
+    title: cleanText(track.title || "Sin título"),
+    artist: cleanText(track.artist || "Spotify"),
+    duration: track.duration || "??:??",
+    thumbnail: track.thumbnail || null,
+    spotifyUrl: track.spotify_url || "",
+    downloadUrl: track.download_url_full || track.download_url || "",
+    fileName: track.filename || `${track.title} - ${track.artist}.mp3`,
+  })).filter(r => r.title && r.downloadUrl);
 }
 
 // ============ OBTENER INFO DE DESCARGA ============
@@ -251,7 +280,7 @@ async function getSpotifyDownloadInfo(input) {
 
     const params = {
       mode: "link",
-      lang: "es",
+      lang: "es3",
     };
 
     if (isSpotifyUrl(cleanInput)) {
