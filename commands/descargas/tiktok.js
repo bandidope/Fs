@@ -11,6 +11,7 @@ const API_TIKTOK_URL = `${API_BASE}/ttdlmp4`;
 
 const COOLDOWN_TIME = 0;
 const DEFAULT_VIDEO_QUALITY = "2";
+const QUALITY_FALLBACK_ORDER = ["2", "1", "hd", "best"];
 const API_LANG = "es";
 const REQUEST_TIMEOUT = 60000;
 const MAX_VIDEO_BYTES = 80 * 1024 * 1024;
@@ -177,6 +178,11 @@ function resolveTikTokQuality(ctx) {
   return DEFAULT_VIDEO_QUALITY;
 }
 
+function buildTikTokQualityCandidates(primary = "") {
+  const normalizedPrimary = normalizeTikTokQuality(primary) || DEFAULT_VIDEO_QUALITY;
+  return Array.from(new Set([normalizedPrimary, ...QUALITY_FALLBACK_ORDER].filter(Boolean)));
+}
+
 function formatTikTokQualityLabel(quality = "") {
   const q = String(quality || "").trim().toLowerCase();
   if (q === "hd" || q === "best") return "HD";
@@ -237,29 +243,34 @@ async function apiGet(url, params, timeout = REQUEST_TIMEOUT) {
 
 async function requestTikTokMeta(videoUrl, qualityHint) {
   let lastError = "No se pudo obtener metadata del video de TikTok.";
+  const qualityCandidates = buildTikTokQualityCandidates(qualityHint);
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const data = await apiGet(API_TIKTOK_URL, {
-        mode: "link",
-        quality: qualityHint,
-        lang: API_LANG,
-        url: videoUrl,
-      });
+  for (const quality of qualityCandidates) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const data = await apiGet(API_TIKTOK_URL, {
+          mode: "link",
+          fast: "true",
+          quality,
+          lang: API_LANG,
+          url: videoUrl,
+        });
 
-      const title = safeFileName(data?.title || data?.result?.title || "tiktok");
-      const fileName = normalizeMp4Name(
-        data?.filename || data?.file_name || title || "tiktok"
-      );
+        const title = safeFileName(data?.title || data?.result?.title || "tiktok");
+        const fileName = normalizeMp4Name(
+          data?.filename || data?.file_name || title || "tiktok"
+        );
 
-      return {
-        title,
-        fileName,
-        downloadUrl: normalizeApiUrl(pickApiDownloadUrl(data)),
-      };
-    } catch (error) {
-      lastError = error?.message || "Error desconocido";
-      await sleep(900 * attempt);
+        return {
+          title,
+          fileName,
+          qualityUsed: quality,
+          downloadUrl: normalizeApiUrl(pickApiDownloadUrl(data)),
+        };
+      } catch (error) {
+        lastError = error?.message || "Error desconocido";
+        await sleep(900 * attempt);
+      }
     }
   }
 
@@ -273,31 +284,52 @@ async function downloadTikTokViaApi(videoUrl, fileName, qualityHint, directUrl =
     `${TMP_FILE_PREFIX}${Date.now()}-${randomUUID()}-${finalName}`
   );
 
-  const normalizedDirectUrl = normalizeApiUrl(directUrl);
-  const requestUrl = normalizedDirectUrl || API_TIKTOK_URL;
-  const requestConfig = {
-    responseType: "stream",
-    timeout: REQUEST_TIMEOUT,
-    maxRedirects: 5,
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
-      Accept: "*/*",
-      Referer: `${API_BASE}/`,
-    },
-    validateStatus: () => true,
+  const buildRequestConfig = (useDirectLink = false) => {
+    const config = {
+      responseType: "stream",
+      timeout: REQUEST_TIMEOUT,
+      maxRedirects: 5,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+        Accept: "*/*",
+        Referer: `${API_BASE}/`,
+      },
+      validateStatus: () => true,
+    };
+
+    if (!useDirectLink) {
+      config.params = {
+        mode: "file",
+        fast: "true",
+        quality: qualityHint,
+        lang: API_LANG,
+        url: videoUrl,
+      };
+    }
+
+    return config;
   };
 
-  if (!normalizedDirectUrl) {
-    requestConfig.params = {
-      mode: "file",
-      quality: qualityHint,
-      lang: API_LANG,
-      url: videoUrl,
-    };
+  const normalizedDirectUrl = normalizeApiUrl(directUrl);
+  let response;
+  try {
+    response = await axios.get(
+      normalizedDirectUrl || API_TIKTOK_URL,
+      buildRequestConfig(Boolean(normalizedDirectUrl))
+    );
+  } catch (error) {
+    if (!normalizedDirectUrl) {
+      throw error;
+    }
+    response = await axios.get(API_TIKTOK_URL, buildRequestConfig(false));
   }
 
-  const response = await axios.get(requestUrl, requestConfig);
+  if (response.status >= 400) {
+    if (normalizedDirectUrl) {
+      response = await axios.get(API_TIKTOK_URL, buildRequestConfig(false));
+    }
+  }
 
   if (response.status >= 400) {
     const errorText = await readStreamToText(response.data).catch(() => "");
@@ -476,7 +508,7 @@ export default {
       const downloaded = await downloadTikTokViaApi(
         videoUrl,
         meta.fileName,
-        qualityHint,
+        meta.qualityUsed || qualityHint,
         meta.downloadUrl
       );
       tempPath = downloaded.tempPath;
