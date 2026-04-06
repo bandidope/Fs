@@ -22,13 +22,18 @@ const TMP_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 const cooldowns = new Map();
 
-if (!fs.existsSync(TMP_DIR)) {
-  fs.mkdirSync(TMP_DIR, { recursive: true });
-}
+ensureTmpDir();
 
 cleanupOldTempFiles();
 
+function ensureTmpDir() {
+  try {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  } catch {}
+}
+
 function cleanupOldTempFiles() {
+  ensureTmpDir();
   try {
     const now = Date.now();
     const files = fs.readdirSync(TMP_DIR);
@@ -278,6 +283,7 @@ async function requestTikTokMeta(videoUrl, qualityHint) {
 }
 
 async function downloadTikTokViaApi(videoUrl, fileName, qualityHint, directUrl = "") {
+  ensureTmpDir();
   const finalName = normalizeMp4Name(fileName || "tiktok.mp4");
   const tempPath = path.join(
     TMP_DIR,
