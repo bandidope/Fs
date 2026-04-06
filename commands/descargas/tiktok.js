@@ -364,11 +364,17 @@ async function downloadTikTokViaApi(videoUrl, fileName, qualityHint, directUrl =
 }
 
 async function sendTikTokVideo(sock, from, quoted, { filePath, fileName, title, size }) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error("No se encontró el archivo temporal de TikTok.");
+  }
+
+  const videoBuffer = fs.readFileSync(filePath);
+
   if (size > VIDEO_AS_DOCUMENT_THRESHOLD) {
     await sock.sendMessage(
       from,
       {
-        document: { url: filePath },
+        document: videoBuffer,
         mimetype: "video/mp4",
         fileName,
         caption: `api dvyer\n\n🎬 ${title}\n📦 Enviado como documento`,
@@ -383,7 +389,7 @@ async function sendTikTokVideo(sock, from, quoted, { filePath, fileName, title, 
     await sock.sendMessage(
       from,
       {
-        video: { url: filePath },
+        video: videoBuffer,
         mimetype: "video/mp4",
         fileName,
         caption: `api dvyer\n\n🎬 ${title}`,
@@ -398,7 +404,7 @@ async function sendTikTokVideo(sock, from, quoted, { filePath, fileName, title, 
     await sock.sendMessage(
       from,
       {
-        document: { url: filePath },
+        document: videoBuffer,
         mimetype: "video/mp4",
         fileName,
         caption: `api dvyer\n\n🎬 ${title}\n📦 Enviado como documento`,
