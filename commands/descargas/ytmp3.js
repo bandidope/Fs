@@ -8,6 +8,7 @@ const API_MP3_URL = buildDvyerUrl("/ytmp3");
 const API_SEARCH_URL = buildDvyerUrl("/ytsearch");
 const AUDIO_QUALITY = "128k";
 const REQUEST_TIMEOUT = 420000;
+const LINK_RETRY_ATTEMPTS = 4;
 const COOLDOWN_TIME = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -117,6 +118,36 @@ function extractApiError(data, status) {
   );
 }
 
+function hideProviderText(value) {
+  return String(value || "")
+    .replace(/https?:\/\/\S+/gi, "[internal]")
+    .replace(/yt1s/gi, "internal")
+    .replace(/ytdown/gi, "internal")
+    .replace(/ytmp3tube/gi, "internal")
+    .replace(/mp3now/gi, "internal")
+    .trim();
+}
+
+function shouldRetryError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("rate-overlimit") ||
+    text.includes("rate overlimit") ||
+    text.includes("overlimit") ||
+    text.includes("429") ||
+    text.includes("too many requests") ||
+    text.includes("timeout") ||
+    text.includes("timed out") ||
+    text.includes("socket hang up") ||
+    text.includes("econnreset") ||
+    text.includes("etimedout") ||
+    text.includes("service unavailable") ||
+    text.includes("temporarily") ||
+    text.includes("media unavailable") ||
+    text.includes("internal")
+  );
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -177,7 +208,7 @@ async function resolveMp3Link(videoUrl, signal, preferredTitle = "") {
 
   let payload = null;
   let lastError = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= LINK_RETRY_ATTEMPTS; attempt += 1) {
     try {
       payload = await apiGet(
         API_MP3_URL,
@@ -191,16 +222,10 @@ async function resolveMp3Link(videoUrl, signal, preferredTitle = "") {
       break;
     } catch (error) {
       lastError = error;
-      const detail = String(error?.message || "").toLowerCase();
-      const retryable =
-        detail.includes("no termino la conversion a tiempo") ||
-        detail.includes("internal mp3now error") ||
-        detail.includes("timeout") ||
-        detail.includes("timed out");
-      if (!retryable || attempt === 2) {
+      if (!shouldRetryError(error) || attempt >= LINK_RETRY_ATTEMPTS) {
         throw error;
       }
-      await sleep(1800);
+      await sleep(1100 * attempt);
     }
   }
   if (!payload) {
@@ -227,13 +252,19 @@ async function resolveMp3Link(videoUrl, signal, preferredTitle = "") {
 }
 
 function toFriendlyError(error) {
-  const text = String(error?.message || error || "").trim();
+  const text = hideProviderText(error?.message || error || "");
   const low = text.toLowerCase();
+  if (low.includes("rate-overlimit") || low.includes("rate overlimit") || low.includes("overlimit")) {
+    return "El proveedor esta saturado ahora. Reintenta en 15-30 segundos.";
+  }
   if (low.includes("timeout") || low.includes("timed out") || low.includes("socket hang up")) {
     return "El servidor tardo demasiado. Intenta de nuevo.";
   }
   if (low.includes("429") || low.includes("too many requests")) {
     return "Hay muchas solicitudes ahora. Intenta en unos segundos.";
+  }
+  if (low.includes("media unavailable")) {
+    return "Ese audio no esta disponible ahora mismo. Prueba en unos segundos o con otro video.";
   }
   return text || "Error al procesar el audio.";
 }
