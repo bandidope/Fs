@@ -1862,7 +1862,7 @@ const ALLOW_LOOPBACK_BRIDGE_WITHOUT_TOKEN = parseBooleanEnv(
   false
 );
 const LOG_COMMAND_LOADS = parseBooleanEnv("LOG_COMMAND_LOADS", false);
-const CONSOLE_BOOT_ANIMATION = parseBooleanEnv("CONSOLE_BOOT_ANIMATION", true);
+const CONSOLE_BOOT_ANIMATION = parseBooleanEnv("CONSOLE_BOOT_ANIMATION", false);
 const CONSOLE_BOOT_FRAME_DELAY_MS = Math.max(
   90,
   parseNumberEnv("CONSOLE_BOOT_FRAME_DELAY_MS", 180) || 180
@@ -1880,7 +1880,7 @@ const CONSOLE_METRIC_PING_URL = String(
 ).trim();
 const CONSOLE_LIVE_TELEMETRY_ENABLED = parseBooleanEnv(
   "CONSOLE_LIVE_TELEMETRY",
-  true
+  false
 );
 const CONSOLE_LIVE_TELEMETRY_INTERVAL_MS = Math.max(
   15_000,
@@ -5251,13 +5251,8 @@ function startLiveConsoleTelemetryTicker() {
           return;
         }
 
-        logBotEvent(
-          mainState,
-          "info",
-          `Live Metrics | CPU ${snapshot.cpuPct}% | RAM ${snapshot.ramPct}% | ` +
-            `NET ${snapshot.netPct}% (${snapshot.netMbps.toFixed(2)} Mbps) | ` +
-            `LAT ${snapshot.latencyMs} ms`
-        );
+        // Keep live snapshot in memory without flooding console logs.
+        mainState.lastTelemetrySnapshot = snapshot;
       })
       .catch(() => {});
   };
@@ -5342,19 +5337,10 @@ function buildDashboardFrame(params = {}) {
     .replaceAll("_", " ")
     .trim()
     .toUpperCase();
-  const compactManaged = String(managedLabels || "MAIN").replace(/\s+/g, " ");
   const compactEnabled = String(activeConfigLabels || "MAIN").replace(/\s+/g, " ");
-  const moduleLines = modules.slice(0, 3).map((item) => {
-    const moduleName = String(item?.name || "MODULE").toUpperCase().padEnd(12, " ");
-    const statusLabel = item.percent >= 95 ? "◆ ACTIVE " : item.percent >= 70 ? "◇ STABLE " : "◇ WARNING";
-    return `${moduleName} ${statusLabel} ${buildSolidBar(item.percent, 20, "░")}`;
-  });
-  while (moduleLines.length < 3) {
-    moduleLines.push(`${"MODULE".padEnd(12, " ")} ◇ WARNING ${buildSolidBar(35, 20, "░")}`);
-  }
   const eventLines = activityLogs.length
-    ? activityLogs.slice(-4).map((line) => `➤ ${String(line || "").replace(/^[✓↻]\s*/u, "")}`)
-    : ["➤ Core initialized", "➤ Module scan complete", "➤ Connections established", "➤ Fallback mode enabled"];
+    ? activityLogs.slice(-2).map((line) => `➤ ${String(line || "").replace(/^[✓↻]\s*/u, "")}`)
+    : ["➤ Core initialized", "➤ Ready for command traffic"];
   const netPct = Math.max(1, Math.min(99, Number(telemetry.netPct || 0)));
 
   lines.push(`┏${"━".repeat(contentWidth)}┓`);
@@ -5379,26 +5365,18 @@ function buildDashboardFrame(params = {}) {
     `◉ Name        ${ownerName.toUpperCase()}`,
     `◉ Prefix      ${prefixValue}`,
     `◉ Commands    ${commandCount}`,
-    `◉ Runtime     ${compactProcess}`,
-    `◉ Managed     ${compactManaged}`,
-    `◉ Enabled     ${compactEnabled}`,
+    `◉ Runtime     ${compactProcess} | Session: ${sessionLabel}`,
+    `◉ Config      ${compactEnabled}`,
   ]);
   emptyRow();
 
-  addSection("MODULE STATUS", moduleLines);
-  emptyRow();
-
-  addSection("EVENT LOG", eventLines);
-  emptyRow();
-
-  addSection("SYSTEM METER", [
-    `CPU      ⟪ ${buildSolidBar(telemetry.cpuPct, 18, "▒")} ⟫ ${String(telemetry.cpuPct).padStart(2, " ")}%`,
-    `RAM      ⟪ ${buildSolidBar(telemetry.ramPct, 18, "▒")} ⟫ ${String(telemetry.ramPct).padStart(2, " ")}%`,
-    `NET      ⟪ ${buildSolidBar(netPct, 18, "▒")} ⟫ ${String(netPct).padStart(2, " ")}% (${Number(telemetry.netMbps || 0).toFixed(2)} Mbps)`,
-    `LATENCY  ${String(telemetry.latencyMs).padStart(3, " ")} ms    MEM ${telemetry.usedRamGb.toFixed(1)}/${telemetry.totalRamGb.toFixed(1)} GB`,
+  addSection("SYSTEM STATUS", [
+    `CPU ${String(telemetry.cpuPct).padStart(2, " ")}% | RAM ${String(telemetry.ramPct).padStart(2, " ")}% | NET ${String(netPct).padStart(2, " ")}% (${Number(telemetry.netMbps || 0).toFixed(2)} Mbps)`,
+    `LAT ${String(telemetry.latencyMs).padStart(3, " ")} ms | MEM ${telemetry.usedRamGb.toFixed(1)}/${telemetry.totalRamGb.toFixed(1)} GB`,
+    ...eventLines,
   ]);
 
-  row(bootReady ? "  SISTEMA LISTO Y EN ESPERA DE INSTRUCCIONES." : "  SECUENCIA DE ARRANQUE EN PROGRESO...");
+  row(bootReady ? "  SISTEMA LISTO." : "  ARRANQUE EN PROGRESO...");
   lines.push(`┗${"━".repeat(contentWidth)}┛`);
 
   return lines;
@@ -5418,13 +5396,13 @@ async function banner() {
     ? settings.prefix.join(", ")
     : String(settings.prefix || ".");
   const terminalWidth = Number(process.stdout?.columns || 0);
-  const bodyWidth = Math.max(80, Math.min(118, terminalWidth > 0 ? terminalWidth - 2 : 100));
+  const bodyWidth = Math.max(76, Math.min(96, terminalWidth > 0 ? terminalWidth - 2 : 92));
   const isInteractiveTerminal = Boolean(process.stdout?.isTTY);
   const animateBoot =
     CONSOLE_BOOT_ANIMATION &&
     isInteractiveTerminal &&
     !isPm2Environment(process.env);
-  const bootSteps = animateBoot ? 5 : 1;
+  const bootSteps = animateBoot ? 2 : 1;
   const bootDelayMs = CONSOLE_BOOT_FRAME_DELAY_MS;
   const onlinePulseFrames = ["●", "○", "◇", "◆"];
   const managedConfigs = getManagedProcessBotConfigs();

@@ -30,6 +30,24 @@ function formatUser(value = "") {
   return digits ? `+${digits}` : id || "Desconocido";
 }
 
+function resolveSenderId(msg = {}) {
+  const candidates = [
+    msg?.senderPhone,
+    msg?.key?.participantPn,
+    msg?.key?.senderPn,
+    msg?.sender,
+    msg?.key?.participant,
+  ]
+    .map((value) => cleanText(value))
+    .filter(Boolean);
+
+  for (const value of candidates) {
+    if (value.includes("@s.whatsapp.net")) return value;
+  }
+
+  return candidates[0] || "";
+}
+
 function profileCard(profile, rank = 0) {
   if (!profile) return "Sin datos de nivel todavia.";
   const progressPercent = Math.max(
@@ -209,7 +227,7 @@ export default {
 
     const text = cleanText(msg?.text || msg?.body || "");
     if (!text) return;
-    const sender = cleanText(msg?.sender);
+    const sender = resolveSenderId(msg);
     if (!sender) return;
     if (msg?.key?.fromMe) return;
 
@@ -225,13 +243,14 @@ export default {
       : "";
 
     const waName = cleanText(msg?.pushName || msg?.notifyName || "");
-    const numberLine = `${waName ? `${waName} · ` : ""}${formatUser(sender) || "Sin numero"}`;
+    const senderDisplay = formatUser(sender) || "Sin numero";
+    const numberLine = `${waName ? `${waName} · ` : ""}${senderDisplay}`;
 
     await sock.sendMessage(from, {
       text:
         `🎉 *SUBISTE DE NIVEL*\n` +
         `${numberLine}\n` +
-        `${formatUser(sender)} pasó de *${result.previousLevel}* a *${result.newLevel}*${roleText}`,
+        `${senderDisplay} pasó de *${result.previousLevel}* a *${result.newLevel}*${roleText}`,
       ...global.channelInfo,
     });
   },
