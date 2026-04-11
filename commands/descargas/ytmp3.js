@@ -10,6 +10,12 @@ import { pipeline } from "stream/promises";
 import { randomUUID } from "crypto";
 import { buildDvyerUrl } from "../../lib/api-manager.js";
 import { chargeDownloadRequest, refundDownloadCharge } from "../economia/download-access.js";
+import {
+  buildRateIdentity,
+  checkRateLimit,
+  formatRetrySeconds,
+  runWithProviderCircuit,
+} from "../../lib/provider-guard.js";
 
 const API_YTMP3_URL = buildDvyerUrl("/ytmp3");
 const TMP_DIR = path.join(os.tmpdir(), "dvyer-ytmp3");
@@ -22,6 +28,9 @@ const METADATA_TIMEOUT = 4 * 60 * 1000;
 const MP3_COMPAT_TRANSCODE_MAX_BYTES = 260 * 1024 * 1024;
 const FFMPEG_MIN_TIMEOUT = 35_000;
 const FFMPEG_MAX_TIMEOUT = 480_000;
+const RATE_LIMIT_MAX = 6;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const PROVIDER_NAME = "dvyer_ytmp3";
 const HTTP_AGENT = new http.Agent({ keepAlive: true });
 const HTTPS_AGENT = new https.Agent({ keepAlive: true });
 
@@ -593,6 +602,30 @@ export default {
       cleanupOldFiles();
 
       const input = resolveUserInput(ctx);
+      const identity = buildRateIdentity(
+        {
+          senderPhone: msg?.senderPhone || ctx?.senderPhone,
+          sender: msg?.sender || ctx?.sender,
+          from,
+        },
+        from
+      );
+      const limitState = checkRateLimit({
+        scope: `ytmp3:${identity}`,
+        limit: RATE_LIMIT_MAX,
+        windowMs: RATE_LIMIT_WINDOW_MS,
+      });
+      if (!limitState.ok) {
+        return await sock.sendMessage(
+          from,
+          {
+            text: `⚠️ Mucho uso de ytmp3. Reintenta en ${formatRetrySeconds(limitState.retryAfterMs)}s.`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
       const resolved = await resolveInputToUrl(input);
 
       if (!resolved?.url) {
@@ -634,7 +667,23 @@ export default {
         quoted
       );
 
-      const downloaded = await downloadYtmp3(resolved.url, resolved.title);
+      const downloaded = await runWithProviderCircuit(
+        PROVIDER_NAME,
+        () => downloadYtmp3(resolved.url, resolved.title),
+        {
+          failureThreshold: 4,
+          cooldownMs: 90_000,
+          shouldCountFailure: (error) => {
+            const text = String(error?.message || error || "").toLowerCase();
+            if (!text) return false;
+            if (text.includes("no encontre resultados")) return false;
+            if (text.includes("uso:")) return false;
+            if (text.includes("supera el limite")) return false;
+            if (text.includes("demasiado grande")) return false;
+            return true;
+          },
+        }
+      );
       tempPath = downloaded.tempPath;
       const compatible = await ensureMp3Compatible(downloaded);
       tempPath = compatible.tempPath;
@@ -649,10 +698,15 @@ export default {
         error: String(error?.message || error || "unknown_error"),
       });
 
+      const errorText =
+        error?.code === "PROVIDER_CIRCUIT_OPEN"
+          ? String(error?.message || "Servicio temporalmente no autorizado para audio.")
+          : String(error?.message || "No se pudo preparar el MP3.");
+
       await sock.sendMessage(
         from,
         {
-          text: `❌ ${String(error?.message || "No se pudo preparar el MP3.")}`,
+          text: `❌ ${errorText}`,
           ...global.channelInfo,
         },
         quoted

@@ -40,6 +40,7 @@ import {
 } from "./lib/group-compat.js";
 import { applyStoredRuntimeVars } from "./lib/runtime-vars.js";
 import { writeJsonAtomic as writeAtomicJsonFile } from "./lib/json-store.js";
+import { getProviderGuardSnapshot } from "./lib/provider-guard.js";
 import { touchEconomyProfile } from "./commands/economia/_shared.js";
 
 dotenv.config();
@@ -158,6 +159,8 @@ const DATABASE_DIR = path.join(process.cwd(), "database");
 const USAGE_STATS_FILE = path.join(DATABASE_DIR, "usage-stats.json");
 const RUNTIME_DIR = path.join(DATABASE_DIR, "runtime");
 const BOT_RUNTIME_STATE_DIR = path.join(RUNTIME_DIR, "bot-states");
+const RUNTIME_LOG_DIR = path.join(RUNTIME_DIR, "logs");
+const STRUCTURED_LOG_FILE = path.join(RUNTIME_LOG_DIR, "events.ndjson");
 
 function normalizeProcessBotId(value = "") {
   const normalized = String(value || "")
@@ -1355,7 +1358,8 @@ function formatCommandConsoleLog(commandData = {}, message = {}, from = "") {
   const scope = String(from || "").endsWith("@g.us")
     ? `grupo:${chatId || "desconocido"}`
     : `privado:${user}`;
-  return `CMD ${commandText} | user ${user} | ${scope}`;
+  const requestId = String(commandData?.requestId || "").trim();
+  return `CMD ${commandText} | user ${user} | ${scope}${requestId ? ` | id ${requestId}` : ""}`;
 }
 
 const GLOBAL_COMMAND_ALIAS_MAP = new Map([
@@ -1854,6 +1858,29 @@ let autoCleanInterval = null;
 let botHealthCheckInterval = null;
 let liveConsoleTelemetryInterval = null;
 let dashboardServer = null;
+let structuredLogStream = null;
+let runtimeRequestCounter = 0;
+const runtimeMetrics = {
+  startedAt: Date.now(),
+  logs: {
+    written: 0,
+    dropped: 0,
+  },
+  http: {
+    healthHits: 0,
+    metricsHits: 0,
+  },
+  commands: {
+    started: 0,
+    success: 0,
+    error: 0,
+    timeout: 0,
+    active: 0,
+    totalDurationMs: 0,
+    maxDurationMs: 0,
+    byName: {},
+  },
+};
 let secondaryBotStartInProgress = false;
 const WEB_BRIDGE_TOKEN = String(process.env.WEB_BRIDGE_TOKEN || "").trim();
 
@@ -1893,6 +1920,7 @@ const ALLOW_LOOPBACK_BRIDGE_WITHOUT_TOKEN = parseBooleanEnv(
 );
 const LOG_COMMAND_LOADS = parseBooleanEnv("LOG_COMMAND_LOADS", false);
 const LOG_COMMAND_EXECUTIONS = parseBooleanEnv("LOG_COMMAND_EXECUTIONS", true);
+const STRUCTURED_LOG_ENABLED = parseBooleanEnv("STRUCTURED_LOG_ENABLED", true);
 const CONSOLE_BOOT_ANIMATION = parseBooleanEnv("CONSOLE_BOOT_ANIMATION", false);
 const CONSOLE_BOOT_FRAME_DELAY_MS = Math.max(
   90,
@@ -2289,7 +2317,99 @@ function wrapConsoleText(value = "", maxWidth = 72) {
   return lines.length ? lines : ["-"];
 }
 
-function logBotEvent(value, level = "info", message = "") {
+function nextRuntimeRequestId(prefix = "req") {
+  runtimeRequestCounter = (Number(runtimeRequestCounter || 0) + 1) % 1_000_000;
+  const ts = Date.now().toString(36);
+  const seq = String(runtimeRequestCounter).padStart(4, "0");
+  return `${prefix}-${ts}-${seq}`;
+}
+
+function ensureStructuredLogStream() {
+  if (!STRUCTURED_LOG_ENABLED) return null;
+  if (structuredLogStream) return structuredLogStream;
+  try {
+    fs.mkdirSync(RUNTIME_LOG_DIR, { recursive: true });
+    structuredLogStream = fs.createWriteStream(STRUCTURED_LOG_FILE, {
+      flags: "a",
+      encoding: "utf8",
+    });
+    structuredLogStream.on("error", () => {
+      runtimeMetrics.logs.dropped += 1;
+      structuredLogStream = null;
+    });
+  } catch {
+    structuredLogStream = null;
+  }
+  return structuredLogStream;
+}
+
+function appendStructuredLog(entry = {}) {
+  const stream = ensureStructuredLogStream();
+  if (!stream) return;
+  try {
+    const line = `${JSON.stringify(entry)}\n`;
+    stream.write(line);
+    runtimeMetrics.logs.written += 1;
+  } catch {
+    runtimeMetrics.logs.dropped += 1;
+  }
+}
+
+function getCommandMetricEntry(commandName = "") {
+  const key = String(commandName || "unknown").trim().toLowerCase() || "unknown";
+  const container = runtimeMetrics.commands.byName;
+  if (!container[key]) {
+    container[key] = {
+      started: 0,
+      success: 0,
+      error: 0,
+      timeout: 0,
+      totalDurationMs: 0,
+      maxDurationMs: 0,
+    };
+  }
+  return container[key];
+}
+
+function recordCommandMetricStart(commandName = "") {
+  runtimeMetrics.commands.started += 1;
+  runtimeMetrics.commands.active += 1;
+  const entry = getCommandMetricEntry(commandName);
+  entry.started += 1;
+}
+
+function recordCommandMetricFinish(commandName = "", status = "success", durationMs = 0) {
+  const normalizedStatus = String(status || "success").trim().toLowerCase();
+  const safeDuration = Math.max(0, Number(durationMs || 0));
+
+  runtimeMetrics.commands.active = Math.max(0, Number(runtimeMetrics.commands.active || 0) - 1);
+  runtimeMetrics.commands.totalDurationMs += safeDuration;
+  runtimeMetrics.commands.maxDurationMs = Math.max(
+    Number(runtimeMetrics.commands.maxDurationMs || 0),
+    safeDuration
+  );
+
+  if (normalizedStatus === "timeout") {
+    runtimeMetrics.commands.timeout += 1;
+  } else if (normalizedStatus === "error") {
+    runtimeMetrics.commands.error += 1;
+  } else {
+    runtimeMetrics.commands.success += 1;
+  }
+
+  const entry = getCommandMetricEntry(commandName);
+  entry.totalDurationMs += safeDuration;
+  entry.maxDurationMs = Math.max(Number(entry.maxDurationMs || 0), safeDuration);
+  if (normalizedStatus === "timeout") {
+    entry.timeout += 1;
+  } else if (normalizedStatus === "error") {
+    entry.error += 1;
+  } else {
+    entry.success += 1;
+  }
+}
+
+function logBotEvent(value, level = "info", message = "", metadata = {}) {
   const config = value?.config || value || {};
   const tag = String(config?.label || "BOT")
     .trim()
@@ -2297,25 +2417,36 @@ function logBotEvent(value, level = "info", message = "") {
     .slice(0, 12);
   const normalizedLevel = String(level || "info").trim().toLowerCase();
   const messageText = String(message || "").trim();
+  const requestId = String(metadata?.requestId || "").trim();
+  const extraText = requestId ? ` [${requestId}]` : "";
   const timeText = chalk.magentaBright(`[${formatLogTime()}]`);
   const tagText = chalk.cyanBright(`[${tag}]`);
 
+  appendStructuredLog({
+    ts: new Date().toISOString(),
+    level: normalizedLevel,
+    bot: tag,
+    message: messageText,
+    requestId: requestId || undefined,
+    meta: isPlainObject(metadata) ? metadata : undefined,
+  });
+
   if (normalizedLevel === "error") {
-    console.log(`${timeText} ${tagText} ${chalk.redBright("[ERROR]")} ${chalk.redBright(messageText)}`);
+    console.log(`${timeText} ${tagText} ${chalk.redBright("[ERROR]")} ${chalk.redBright(`${messageText}${extraText}`)}`);
     return;
   }
 
   if (normalizedLevel === "warn") {
-    console.log(`${timeText} ${tagText} ${chalk.yellowBright("[WARN ]")} ${chalk.yellowBright(messageText)}`);
+    console.log(`${timeText} ${tagText} ${chalk.yellowBright("[WARN ]")} ${chalk.yellowBright(`${messageText}${extraText}`)}`);
     return;
   }
 
   if (normalizedLevel === "success") {
-    console.log(`${timeText} ${tagText} ${chalk.greenBright("[ OK  ]")} ${chalk.greenBright(messageText)}`);
+    console.log(`${timeText} ${tagText} ${chalk.greenBright("[ OK  ]")} ${chalk.greenBright(`${messageText}${extraText}`)}`);
     return;
   }
 
-  console.log(`${timeText} ${tagText} ${chalk.blueBright("[INFO ]")} ${chalk.cyanBright(messageText)}`);
+  console.log(`${timeText} ${tagText} ${chalk.blueBright("[INFO ]")} ${chalk.cyanBright(`${messageText}${extraText}`)}`);
 }
 
 function createStoreForBot(botId) {
@@ -4312,11 +4443,126 @@ function getDashboardSnapshot(options = {}) {
     weekly: getWeeklySnapshot(10),
     resilience: getResilienceSnapshot(),
     autoclean: getAutoCleanState(),
+    runtimeMetrics,
+    providers: getProviderGuardSnapshot(),
     dashboard: {
       ...dashboardState,
       active: Boolean(dashboardServer),
     },
   };
+}
+
+function summarizeBotConnections() {
+  const bots = global.botRuntime?.listBots?.({ includeMain: true }) || [];
+  const total = bots.length;
+  const connected = bots.filter((bot) => Boolean(bot?.connected)).length;
+  const disconnected = Math.max(0, total - connected);
+  return { total, connected, disconnected };
+}
+
+function getHealthSnapshot() {
+  const memory = process.memoryUsage();
+  const connections = summarizeBotConnections();
+  const uptimeSeconds = Math.floor(process.uptime());
+  const providers = getProviderGuardSnapshot();
+  const openProviders = providers.filter((item) => item.status === "open").map((item) => item.name);
+  const now = Date.now();
+
+  const ok = connections.connected > 0 && openProviders.length === 0;
+  return {
+    ok,
+    status: ok ? "ok" : "degraded",
+    timestamp: new Date(now).toISOString(),
+    process: {
+      pid: process.pid,
+      mode: PROCESS_MODE_LABEL,
+      uptimeSeconds,
+    },
+    memory: {
+      rss: Number(memory.rss || 0),
+      heapUsed: Number(memory.heapUsed || 0),
+      heapTotal: Number(memory.heapTotal || 0),
+      external: Number(memory.external || 0),
+    },
+    counters: {
+      totalMessages: Number(totalMensajes || 0),
+      totalCommands: Number(totalComandos || 0),
+    },
+    runtimeMetrics,
+    connections,
+    providers,
+    alerts: {
+      openProviders,
+    },
+  };
+}
+
+function escapePromLabel(value = "") {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n");
+}
+
+function buildPrometheusMetrics() {
+  const health = getHealthSnapshot();
+  const providers = Array.isArray(health.providers) ? health.providers : [];
+  const commandEntries = Object.entries(runtimeMetrics.commands.byName || {});
+
+  const lines = [];
+  lines.push("# HELP fsociety_uptime_seconds Process uptime in seconds");
+  lines.push("# TYPE fsociety_uptime_seconds gauge");
+  lines.push(`fsociety_uptime_seconds ${Math.floor(process.uptime())}`);
+
+  lines.push("# HELP fsociety_messages_total Total messages observed");
+  lines.push("# TYPE fsociety_messages_total counter");
+  lines.push(`fsociety_messages_total ${Number(totalMensajes || 0)}`);
+
+  lines.push("# HELP fsociety_commands_total Total commands observed");
+  lines.push("# TYPE fsociety_commands_total counter");
+  lines.push(`fsociety_commands_total ${Number(totalComandos || 0)}`);
+
+  lines.push("# HELP fsociety_command_executions_total Command lifecycle counters");
+  lines.push("# TYPE fsociety_command_executions_total counter");
+  lines.push(`fsociety_command_executions_total{status="started"} ${Number(runtimeMetrics.commands.started || 0)}`);
+  lines.push(`fsociety_command_executions_total{status="success"} ${Number(runtimeMetrics.commands.success || 0)}`);
+  lines.push(`fsociety_command_executions_total{status="error"} ${Number(runtimeMetrics.commands.error || 0)}`);
+  lines.push(`fsociety_command_executions_total{status="timeout"} ${Number(runtimeMetrics.commands.timeout || 0)}`);
+
+  lines.push("# HELP fsociety_command_active Current active command executions");
+  lines.push("# TYPE fsociety_command_active gauge");
+  lines.push(`fsociety_command_active ${Number(runtimeMetrics.commands.active || 0)}`);
+
+  lines.push("# HELP fsociety_command_duration_ms_total Accumulated command duration in ms");
+  lines.push("# TYPE fsociety_command_duration_ms_total counter");
+  lines.push(`fsociety_command_duration_ms_total ${Number(runtimeMetrics.commands.totalDurationMs || 0)}`);
+
+  lines.push("# HELP fsociety_command_duration_ms_max Max command duration in ms");
+  lines.push("# TYPE fsociety_command_duration_ms_max gauge");
+  lines.push(`fsociety_command_duration_ms_max ${Number(runtimeMetrics.commands.maxDurationMs || 0)}`);
+
+  for (const [commandName, entry] of commandEntries) {
+    const command = escapePromLabel(commandName);
+    lines.push(`fsociety_command_by_name_total{command="${command}",status="started"} ${Number(entry.started || 0)}`);
+    lines.push(`fsociety_command_by_name_total{command="${command}",status="success"} ${Number(entry.success || 0)}`);
+    lines.push(`fsociety_command_by_name_total{command="${command}",status="error"} ${Number(entry.error || 0)}`);
+    lines.push(`fsociety_command_by_name_total{command="${command}",status="timeout"} ${Number(entry.timeout || 0)}`);
+  }
+
+  lines.push("# HELP fsociety_provider_circuit_state Provider circuit breaker state (1=open)");
+  lines.push("# TYPE fsociety_provider_circuit_state gauge");
+  for (const provider of providers) {
+    const name = escapePromLabel(provider.name);
+    const isOpen = provider.status === "open" ? 1 : 0;
+    lines.push(`fsociety_provider_circuit_state{provider="${name}"} ${isOpen}`);
+  }
+
+  lines.push("# HELP fsociety_http_endpoint_hits_total Hits for health/metrics endpoints");
+  lines.push("# TYPE fsociety_http_endpoint_hits_total counter");
+  lines.push(`fsociety_http_endpoint_hits_total{endpoint="health"} ${Number(runtimeMetrics.http.healthHits || 0)}`);
+  lines.push(`fsociety_http_endpoint_hits_total{endpoint="metrics"} ${Number(runtimeMetrics.http.metricsHits || 0)}`);
+
+  return `${lines.join("\n")}\n`;
 }
 
 function buildMainPairingSnapshot(result = null) {
@@ -4749,6 +4995,35 @@ function ensureDashboardServer() {
       const requestUrl = resolveRequestUrl(req);
       const pathname = requestUrl.pathname;
       const method = String(req?.method || "GET").trim().toUpperCase();
+
+      if (pathname === "/health" && method === "GET") {
+        runtimeMetrics.http.healthHits += 1;
+        writeJson(res, 200, getHealthSnapshot());
+        return;
+      }
+
+      if (pathname === "/metrics" && method === "GET") {
+        runtimeMetrics.http.metricsHits += 1;
+        if (
+          DASHBOARD_TOKEN &&
+          !isTokenAuthorized(req, DASHBOARD_TOKEN, [
+            "x-dashboard-token",
+            "x-api-key",
+          ])
+        ) {
+          writeJson(res, 401, {
+            message: "Token de dashboard invalido.",
+          });
+          return;
+        }
+
+        res.writeHead(200, {
+          "content-type": "text/plain; version=0.0.4; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        res.end(buildPrometheusMetrics());
+        return;
+      }
 
       if (pathname === "/internal/main/pairing") {
         if (!["GET", "POST"].includes(method)) {
@@ -7348,6 +7623,9 @@ async function handleIncomingMessages(botState, sock, messages) {
   for (const raw of messages || []) {
     let failedCommandName = "";
     let activeCommandContext = null;
+    let activeRequestId = "";
+    let commandStartedAt = 0;
+    let commandMetricsOpened = false;
 
     try {
       if (!raw?.message) continue;
@@ -7424,29 +7702,62 @@ async function handleIncomingMessages(botState, sock, messages) {
       const blockedByMaintenance = await isBlockedByMaintenance(cmd, commandContext);
       if (blockedByMaintenance) continue;
 
+      activeRequestId = nextRuntimeRequestId("cmd");
+      commandData.requestId = activeRequestId;
+      commandContext.requestId = activeRequestId;
+
       if (LOG_COMMAND_EXECUTIONS) {
         logBotEvent(
           botState,
           "info",
-          formatCommandConsoleLog(commandData, m, from)
+          formatCommandConsoleLog(commandData, m, from),
+          {
+            requestId: activeRequestId,
+            command: commandData.commandName,
+            chatId: from,
+            sender: m.senderPhone || m.sender || "",
+          }
         );
       }
 
+      commandStartedAt = Date.now();
+      commandMetricsOpened = true;
+      recordCommandMetricStart(commandData.commandName);
       totalComandos++;
       trackCommandUsage(botState, m, commandData.commandName);
 
       if (isDownloadCommand(cmd)) {
+        startCommandTracking(botState, commandData.commandName, resolveCommandTimeout(cmd));
         const runningJob = enqueueDownloadCommand(botState, cmd, commandContext);
         runningJob.promise.then(() => {
+          finishCommandTracking(botState, commandData.commandName, "ok");
+          if (commandMetricsOpened) {
+            recordCommandMetricFinish(
+              commandData.commandName,
+              "success",
+              Math.max(0, Date.now() - commandStartedAt)
+            );
+            commandMetricsOpened = false;
+          }
           recordCommandSuccess(commandData.commandName);
         });
         runningJob.promise.catch(async (err) => {
+          const status = isTaskTimeoutError(err) ? "timeout" : "error";
+          finishCommandTracking(botState, commandData.commandName, status);
+          if (commandMetricsOpened) {
+            recordCommandMetricFinish(
+              commandData.commandName,
+              status === "timeout" ? "timeout" : "error",
+              Math.max(0, Date.now() - commandStartedAt)
+            );
+            commandMetricsOpened = false;
+          }
           recordCommandFailure(commandData.commandName, err);
           if (isTaskTimeoutError(err)) {
             await sendCommandTimeoutNotice(commandContext, err);
           }
           await sendVisibleCommandErrorNotice(botState, commandContext, err);
-          console.error(`${getBotTag(botState)} Error comando concurrente:`, err);
+          console.error(`${getBotTag(botState)} Error comando concurrente [${activeRequestId || "n/a"}]:`, err);
         });
         continue;
       }
@@ -7463,14 +7774,31 @@ async function handleIncomingMessages(botState, sock, messages) {
         { abortController }
       );
       finishCommandTracking(botState, commandData.commandName, "ok");
+      if (commandMetricsOpened) {
+        recordCommandMetricFinish(
+          commandData.commandName,
+          "success",
+          Math.max(0, Date.now() - commandStartedAt)
+        );
+        commandMetricsOpened = false;
+      }
       recordCommandSuccess(commandData.commandName);
     } catch (err) {
       if (failedCommandName) {
+        const status = isTaskTimeoutError(err) ? "timeout" : "error";
         finishCommandTracking(
           botState,
           failedCommandName,
-          isTaskTimeoutError(err) ? "timeout" : "error"
+          status
         );
+        if (commandMetricsOpened) {
+          recordCommandMetricFinish(
+            failedCommandName,
+            status === "timeout" ? "timeout" : "error",
+            Math.max(0, Date.now() - commandStartedAt)
+          );
+          commandMetricsOpened = false;
+        }
         recordCommandFailure(failedCommandName, err);
       }
       if (activeCommandContext && isTaskTimeoutError(err)) {
@@ -7479,7 +7807,7 @@ async function handleIncomingMessages(botState, sock, messages) {
       if (activeCommandContext) {
         await sendVisibleCommandErrorNotice(botState, activeCommandContext, err);
       }
-      console.error(`${getBotTag(botState)} Error comando:`, err);
+      console.error(`${getBotTag(botState)} Error comando [${activeRequestId || "n/a"}]:`, err);
     }
   }
 }
@@ -7935,6 +8263,12 @@ process.on("SIGINT", () => {
       liveConsoleTelemetryInterval = null;
     }
     writeAtomicJsonFile(USAGE_STATS_FILE, usageStats);
+    if (structuredLogStream) {
+      try {
+        structuredLogStream.end();
+      } catch {}
+      structuredLogStream = null;
+    }
   } catch {}
 
   try {

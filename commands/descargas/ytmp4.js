@@ -11,6 +11,12 @@ import { pipeline } from "stream/promises";
 import { randomUUID } from "crypto";
 import { buildDvyerUrl } from "../../lib/api-manager.js";
 import { chargeDownloadRequest, refundDownloadCharge } from "../economia/download-access.js";
+import {
+  buildRateIdentity,
+  checkRateLimit,
+  formatRetrySeconds,
+  runWithProviderCircuit,
+} from "../../lib/provider-guard.js";
 
 const API_YTMP4_URL = buildDvyerUrl("/ytmp4");
 const TMP_DIR = path.join(os.tmpdir(), "dvyer-ytmp4");
@@ -27,6 +33,9 @@ const FFMPEG_REMUX_MAX_BYTES = 300 * 1024 * 1024;
 const FAST_COMPAT_TRANSCODE_MAX_BYTES = 220 * 1024 * 1024;
 const FFMPEG_MIN_TIMEOUT = 40_000;
 const FFMPEG_MAX_TIMEOUT = 420_000;
+const RATE_LIMIT_MAX = 5;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const PROVIDER_NAME = "dvyer_ytmp4";
 
 async function ensureTmpDir() {
   await fsp.mkdir(TMP_DIR, { recursive: true });
@@ -744,6 +753,30 @@ export default {
     try {
       const rawInput = resolveRawInput(ctx);
       const { quality, query, fast } = extractQualityAndQuery(rawInput);
+      const identity = buildRateIdentity(
+        {
+          senderPhone: msg?.senderPhone || ctx?.senderPhone,
+          sender: msg?.sender || ctx?.sender,
+          from,
+        },
+        from
+      );
+      const limitState = checkRateLimit({
+        scope: `ytmp4:${identity}`,
+        limit: RATE_LIMIT_MAX,
+        windowMs: RATE_LIMIT_WINDOW_MS,
+      });
+      if (!limitState.ok) {
+        return await sock.sendMessage(
+          from,
+          {
+            text: `⚠️ Mucho uso de ytmp4. Reintenta en ${formatRetrySeconds(limitState.retryAfterMs)}s.`,
+            ...global.channelInfo,
+          },
+          quoted
+        );
+      }
+
       const resolved = await resolveInputToUrl(query || rawInput);
 
       if (!resolved?.url) {
@@ -786,7 +819,24 @@ export default {
         quoted
       );
 
-      const downloaded = await downloadYtmp4Fallback(resolved.url, resolved.title, quality, fast);
+      const downloaded = await runWithProviderCircuit(
+        PROVIDER_NAME,
+        () => downloadYtmp4Fallback(resolved.url, resolved.title, quality, fast),
+        {
+          failureThreshold: 4,
+          cooldownMs: 90_000,
+          shouldCountFailure: (error) => {
+            const text = String(error?.message || error || "").toLowerCase();
+            if (!text) return false;
+            if (text.includes("no encontré resultados")) return false;
+            if (text.includes("no encontre resultados")) return false;
+            if (text.includes("uso:")) return false;
+            if (text.includes("supera el limite")) return false;
+            if (text.includes("demasiado grande")) return false;
+            return true;
+          },
+        }
+      );
       tempPath = downloaded.tempPath;
 
       // En fast priorizamos velocidad, pero con compatibilidad WhatsApp.
@@ -834,10 +884,14 @@ export default {
       }
 
       if (!sentSuccessfully) {
+        const shownError =
+          error?.code === "PROVIDER_CIRCUIT_OPEN"
+            ? String(error?.message || "Servicio temporalmente no autorizado para video.")
+            : String(error?.message || "No se pudo preparar el MP4.");
         await sock.sendMessage(
           from,
           {
-            text: `❌ ${String(error?.message || "No se pudo preparar el MP4.")}`,
+            text: `❌ ${shownError}`,
             ...global.channelInfo,
           },
           quoted
