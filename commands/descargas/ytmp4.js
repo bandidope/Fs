@@ -21,9 +21,10 @@ const MIN_VIDEO_BYTES = 64 * 1024;
 const HTTP_AGENT = new http.Agent({ keepAlive: true, maxSockets: 20, maxFreeSockets: 10 });
 const HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 20, maxFreeSockets: 10 });
 const QUALITY_PATTERN = /^(1080p|720p|480p|360p|240p|144p|best|hd|sd|\d{3,4}p?)$/i;
-const REMUX_MAX_BYTES = 300 * 1024 * 1024;
-const REMUX_MIN_TIMEOUT = 25_000;
-const REMUX_MAX_TIMEOUT = 120_000;
+const FFMPEG_FULL_MAX_BYTES = 700 * 1024 * 1024;
+const FFMPEG_REMUX_MAX_BYTES = 300 * 1024 * 1024;
+const FFMPEG_MIN_TIMEOUT = 40_000;
+const FFMPEG_MAX_TIMEOUT = 420_000;
 
 async function ensureTmpDir() {
   await fsp.mkdir(TMP_DIR, { recursive: true });
@@ -109,26 +110,11 @@ function extractApiError(data, status) {
   );
 }
 
-function runFfmpegRemux(inputPath, outputPath, timeoutMs) {
+function runFfmpeg(args, timeoutMs) {
   return new Promise((resolve, reject) => {
     let done = false;
     let stderr = "";
-    const child = spawn("ffmpeg", [
-      "-y",
-      "-i",
-      inputPath,
-      "-map",
-      "0:v:0",
-      "-map",
-      "0:a?",
-      "-c",
-      "copy",
-      "-movflags",
-      "+faststart",
-      "-loglevel",
-      "error",
-      outputPath,
-    ]);
+    const child = spawn("ffmpeg", args);
 
     const timer = setTimeout(() => {
       if (done) return;
@@ -162,17 +148,105 @@ function runFfmpegRemux(inputPath, outputPath, timeoutMs) {
   });
 }
 
+function ffmpegTimeoutForBytes(bytes) {
+  const mb = Math.max(1, Math.round(Number(bytes || 0) / (1024 * 1024)));
+  return Math.max(FFMPEG_MIN_TIMEOUT, Math.min(FFMPEG_MAX_TIMEOUT, mb * 1300));
+}
+
+async function transcodeMp4Full(data) {
+  const sourcePath = String(data?.tempPath || "");
+  if (!sourcePath || !fs.existsSync(sourcePath)) return data;
+  const size = Number(data?.size || 0);
+  if (!Number.isFinite(size) || size <= 0 || size > FFMPEG_FULL_MAX_BYTES) return data;
+
+  const outputPath = path.join(TMP_DIR, `${Date.now()}-${randomUUID()}-ytmp4-full.mp4`);
+  const timeoutMs = ffmpegTimeoutForBytes(size);
+
+  try {
+    await runFfmpeg(
+      [
+        "-y",
+        "-i",
+        sourcePath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "24",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-max_muxing_queue_size",
+        "1024",
+        "-loglevel",
+        "error",
+        outputPath,
+      ],
+      timeoutMs
+    );
+
+    const stat = await fsp.stat(outputPath).catch(() => null);
+    if (!stat?.size || stat.size < MIN_VIDEO_BYTES) {
+      await deleteFileSafe(outputPath);
+      return data;
+    }
+
+    await deleteFileSafe(sourcePath);
+    return {
+      ...data,
+      tempPath: outputPath,
+      size: stat.size,
+      contentType: "video/mp4",
+    };
+  } catch {
+    await deleteFileSafe(outputPath);
+    return data;
+  }
+}
+
 async function remuxMp4Fast(data) {
   const sourcePath = String(data?.tempPath || "");
   if (!sourcePath || !fs.existsSync(sourcePath)) return data;
   const size = Number(data?.size || 0);
-  if (!Number.isFinite(size) || size <= 0 || size > REMUX_MAX_BYTES) return data;
+  if (!Number.isFinite(size) || size <= 0 || size > FFMPEG_REMUX_MAX_BYTES) return data;
 
   const outputPath = path.join(TMP_DIR, `${Date.now()}-${randomUUID()}-ytmp4-fixed.mp4`);
-  const timeoutMs = Math.max(REMUX_MIN_TIMEOUT, Math.min(REMUX_MAX_TIMEOUT, Math.round(size / (1024 * 1024)) * 1000));
+  const timeoutMs = ffmpegTimeoutForBytes(size);
 
   try {
-    await runFfmpegRemux(sourcePath, outputPath, timeoutMs);
+    await runFfmpeg(
+      [
+        "-y",
+        "-i",
+        sourcePath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        "-loglevel",
+        "error",
+        outputPath,
+      ],
+      timeoutMs
+    );
     const stat = await fsp.stat(outputPath).catch(() => null);
     if (!stat?.size || stat.size < MIN_VIDEO_BYTES) {
       await deleteFileSafe(outputPath);
@@ -622,12 +696,15 @@ export default {
       );
 
       const downloaded = await downloadYtmp4Fallback(resolved.url, resolved.title, quality, fast);
-      const prepared = await remuxMp4Fast(downloaded);
+      const transcoded = await transcodeMp4Full(downloaded);
+      const prepared = await remuxMp4Fast(transcoded);
       tempPath = prepared.tempPath;
+      const officialFileName = normalizeMp4Name(resolved.title || prepared.fileName || "youtube-video.mp4");
 
       await sendLocalMp4(sock, from, quoted, {
         ...prepared,
-        title: path.parse(prepared.fileName).name || resolved.title,
+        fileName: officialFileName,
+        title: resolved.title || path.parse(officialFileName).name,
         quality,
       });
     } catch (error) {
