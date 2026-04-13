@@ -701,6 +701,10 @@ export default {
         text =
           `${result.message}\n` +
           `Prueba con otro slot o revisa *${prefix}codigosubbots*.`;
+      } else if (result?.status === "number_already_linked") {
+        text =
+          `${result.message}\n` +
+          `Ese numero solo puede estar vinculado en un subbot a la vez.`;
       } else if (result?.status === "main_not_ready") {
         text = "Primero vincula y conecta el bot principal desde la consola.";
       } else if (result?.status === "already_linked") {

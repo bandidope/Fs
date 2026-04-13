@@ -2529,10 +2529,35 @@ function getSubbotConfigBySlot(slotNumber) {
 
 function getSubbotAssignedNumber(config = {}) {
   return (
+    sanitizePhoneNumber(config?.waNumber) ||
+    sanitizePhoneNumber(config?.configuredNumber) ||
     sanitizePhoneNumber(config?.requesterNumber) ||
     sanitizePhoneNumber(config?.pairingNumber) ||
     ""
   );
+}
+
+function findSubbotByAssignedNumber(number, options = {}) {
+  const normalizedNumber = sanitizePhoneNumber(number);
+  if (!normalizedNumber) return null;
+
+  const excludeSlot = Number(options?.excludeSlot || 0);
+
+  for (const config of SUBBOT_SLOT_CONFIGS || []) {
+    if (!config) continue;
+    const summary = summarizeBotConfig(config);
+    const slot = Number(summary?.slot || config?.slot || 0);
+    if (excludeSlot > 0 && slot === excludeSlot) continue;
+    if (getSubbotAssignedNumber(summary) !== normalizedNumber) continue;
+
+    return {
+      slot,
+      botId: String(summary?.id || config?.id || ""),
+      displayName: String(summary?.displayName || config?.displayName || "Subbot"),
+    };
+  }
+
+  return null;
 }
 
 function pickDefaultSubbotConfig(options = {}) {
@@ -5120,6 +5145,7 @@ function mapRuntimePairingResultToPanelPayload(requestToken, result = {}) {
     "missing_bot",
     "main_not_ready",
     "already_linked",
+    "number_already_linked",
     "missing_number",
     "slot_busy",
     "no_capacity",
@@ -5865,6 +5891,13 @@ function resolveBridgeSubbotError(result = {}, maxSlots = 15) {
     return result.message || "Ese slot ya esta ocupado por otro subbot.";
   }
 
+  if (result?.status === "number_already_linked") {
+    return (
+      result.message ||
+      "Ese numero ya esta vinculado en otro subbot. Libera ese slot antes de reutilizarlo."
+    );
+  }
+
   if (result?.status === "main_not_ready") {
     return "El bot principal aun no esta listo para generar un codigo.";
   }
@@ -5891,7 +5924,11 @@ function resolveBridgeSubbotError(result = {}, maxSlots = 15) {
 function resolveBridgeSubbotHttpStatus(status = "") {
   if (status === "main_not_ready") return 503;
   if (status === "public_requests_disabled") return 403;
-  if (["no_capacity", "slot_busy", "pending", "already_linked"].includes(status)) {
+  if (
+    ["no_capacity", "slot_busy", "pending", "already_linked", "number_already_linked"].includes(
+      status
+    )
+  ) {
     return 409;
   }
 
@@ -8483,11 +8520,26 @@ global.botRuntime = {
       const nextPairingNumber =
         explicitNumber || requesterNumber || sanitizePhoneNumber(persistedConfig.pairingNumber);
       const nextRequesterNumber = requesterNumber || nextPairingNumber;
+      const duplicatedAssignment = nextRequesterNumber
+        ? findSubbotByAssignedNumber(nextRequesterNumber, {
+            excludeSlot: Number(targetConfig?.slot || persistedConfig?.slot || 0),
+          })
+        : null;
       const isRequestedSlot = requestedBotId !== "subbot";
       const slotBusy =
         persistedSummary.connected ||
         persistedSummary.registered ||
         persistedSummary.pairingPending;
+
+      if (duplicatedAssignment) {
+        return {
+          ok: false,
+          status: "number_already_linked",
+          message:
+            `El numero ${nextRequesterNumber} ya esta vinculado ` +
+            `en el slot ${duplicatedAssignment.slot}. Libera ese slot antes de usarlo otra vez.`,
+        };
+      }
 
       if (
         isRequestedSlot &&
