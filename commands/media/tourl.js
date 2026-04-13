@@ -5,6 +5,12 @@ import { buildDvyerUrl } from "../../lib/api-manager.js";
 const logger = pino({ level: "silent" });
 const API_IMGBB_UPLOAD_URL = buildDvyerUrl("/imgbb/upload");
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const IMGBB_API_KEY_OVERRIDE = cleanText(
+  process.env.TOURL_IMGBB_API_KEY ||
+    process.env.IMGBB_API_KEY ||
+    process.env.DVYER_IMGBB_API_KEY ||
+    ""
+);
 
 function getQuoted(msg) {
   return msg?.key ? { quoted: msg } : undefined;
@@ -191,6 +197,9 @@ async function uploadViaDvyerApi(image) {
     new Blob([image.buffer], { type: image.mimeType || "image/jpeg" }),
     String(image.fileName || "imagen.jpg")
   );
+  if (IMGBB_API_KEY_OVERRIDE) {
+    form.append("key", IMGBB_API_KEY_OVERRIDE);
+  }
 
   const response = await fetch(API_IMGBB_UPLOAD_URL, {
     method: "POST",
@@ -198,7 +207,14 @@ async function uploadViaDvyerApi(image) {
   });
 
   if (!response.ok) {
-    throw new Error(await readResponseError(response));
+    const detail = await readResponseError(response);
+    const normalized = cleanText(detail).toLowerCase();
+    if (normalized.includes("imgbb_api_key") || normalized.includes("api key")) {
+      throw new Error(
+        "Falta configurar IMGBB_API_KEY para .tourl permanente. Agrega esa variable en Render (API) o TOURL_IMGBB_API_KEY en el bot."
+      );
+    }
+    throw new Error(detail);
   }
 
   const data = await response.json();
@@ -213,49 +229,6 @@ async function uploadViaDvyerApi(image) {
     viewerUrl: cleanText(data?.viewer_url || ""),
     deleteUrl: cleanText(data?.delete_url || ""),
   };
-}
-
-async function uploadViaLitterbox(image) {
-  const form = new FormData();
-  form.append("reqtype", "fileupload");
-  form.append("time", "72h");
-  form.append(
-    "fileToUpload",
-    new Blob([image.buffer], { type: image.mimeType || "image/jpeg" }),
-    String(image.fileName || "imagen.jpg")
-  );
-
-  const response = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
-    method: "POST",
-    body: form,
-  });
-
-  const raw = cleanText(await response.text().catch(() => ""));
-  if (!response.ok) {
-    throw new Error(raw || `HTTP ${response.status}`);
-  }
-  if (!/^https?:\/\//i.test(raw)) {
-    throw new Error(raw || "Litterbox no devolvio una URL valida.");
-  }
-
-  return {
-    provider: "litterbox_72h",
-    directUrl: raw,
-    viewerUrl: raw,
-    deleteUrl: "",
-  };
-}
-
-async function uploadWithFallback(image) {
-  try {
-    return await uploadViaDvyerApi(image);
-  } catch (apiError) {
-    const fallback = await uploadViaLitterbox(image);
-    return {
-      ...fallback,
-      apiWarning: cleanText(apiError?.message || "fallback"),
-    };
-  }
 }
 
 export default {
@@ -295,25 +268,15 @@ export default {
         quoted
       );
 
-      const uploaded = await uploadWithFallback(image);
+      const uploaded = await uploadViaDvyerApi(image);
       const lines = [
         "╭─〔 *DVYER • TOURL* 〕",
         `┃ ✅ URL directa: ${uploaded.directUrl}`,
-        uploaded.provider === "imgbb_api"
-          ? "┃ ⚡ Hosting: ImgBB"
-          : "┃ ⚡ Hosting: Litterbox (temporal 72h)",
+        "┃ ⚡ Hosting: ImgBB (sin expiracion)",
         uploaded.viewerUrl ? `┃ 👁 Vista: ${uploaded.viewerUrl}` : "",
         uploaded.deleteUrl ? `┃ 🗑 Delete: ${uploaded.deleteUrl}` : "",
         "╰─⟡ Listo.",
       ].filter(Boolean);
-
-      if (uploaded.apiWarning) {
-        lines.splice(
-          lines.length - 1,
-          0,
-          `┃ ℹ Fallback: ${uploaded.apiWarning.slice(0, 120)}`
-        );
-      }
 
       return sock.sendMessage(
         from,
@@ -335,4 +298,3 @@ export default {
     }
   },
 };
-
