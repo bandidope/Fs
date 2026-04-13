@@ -1184,8 +1184,49 @@ function getGroupCommandDelayMs(botId = "") {
   return Math.max(0, Math.min(GROUP_COMMAND_SUBBOT_MAX_DELAY_MS, computedDelay));
 }
 
-function getGroupCommandClaimFilePath(messageKey = "") {
-  const normalizedKey = String(messageKey || "").trim();
+function normalizeGroupCommandText(value = "") {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeGroupCommandSender(raw = {}) {
+  const senderCandidate =
+    raw?.key?.participant ||
+    raw?.key?.participantPn ||
+    raw?.key?.participantLid ||
+    raw?.key?.remoteJid ||
+    "";
+  const normalized = String(normalizeJidUser(senderCandidate) || "")
+    .trim()
+    .toLowerCase();
+  if (normalized) return normalized;
+  return String(senderCandidate || "").trim().toLowerCase();
+}
+
+function buildGroupCommandClaimKey(raw = {}, commandData = {}) {
+  const chatId = String(raw?.key?.remoteJid || "")
+    .trim()
+    .toLowerCase();
+  const commandName = normalizeGroupCommandText(commandData?.commandName || "");
+  if (!chatId || !commandName) return "";
+
+  const sender = normalizeGroupCommandSender(raw) || "unknown";
+  const commandBody = normalizeGroupCommandText(
+    commandData?.body ||
+      (Array.isArray(commandData?.args) ? commandData.args.join(" ") : "") ||
+      ""
+  );
+  const commandBodyHash = crypto.createHash("sha1").update(commandBody).digest("hex").slice(0, 16);
+  const timestampMs = parseMessageTimestampToMs(raw?.messageTimestamp);
+  const timestampSeconds = timestampMs ? Math.floor(timestampMs / 1000) : 0;
+
+  return `${chatId}|${sender}|${commandName}|${commandBodyHash}|${timestampSeconds}`;
+}
+
+function getGroupCommandClaimFilePath(claimKey = "") {
+  const normalizedKey = String(claimKey || "").trim();
   if (!normalizedKey) return "";
   const digest = crypto.createHash("sha1").update(normalizedKey).digest("hex");
   return path.join(GROUP_COMMAND_CLAIM_DIR, `${digest}.json`);
@@ -1656,10 +1697,10 @@ async function reserveGroupCommandExecution(botState, raw, commandData = {}) {
     return { allowed: true, reason: "not_group" };
   }
 
-  const messageKey = getMessageDedupKey(raw);
-  const claimFilePath = getGroupCommandClaimFilePath(messageKey);
+  const claimKey = buildGroupCommandClaimKey(raw, commandData) || getMessageDedupKey(raw);
+  const claimFilePath = getGroupCommandClaimFilePath(claimKey);
   if (!claimFilePath) {
-    return { allowed: true, reason: "missing_message_key" };
+    return { allowed: true, reason: "missing_claim_key" };
   }
 
   const now = Date.now();
@@ -1676,8 +1717,11 @@ async function reserveGroupCommandExecution(botState, raw, commandData = {}) {
 
   const payload = {
     claimedAt: Date.now(),
+    claimKey,
     chatId,
     messageId: String(raw?.key?.id || "").trim(),
+    messageTimestampMs: parseMessageTimestampToMs(raw?.messageTimestamp),
+    sender: normalizeGroupCommandSender(raw),
     command: String(commandData?.commandName || "").trim().toLowerCase(),
     botId,
     slot,
