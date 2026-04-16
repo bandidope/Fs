@@ -1,25 +1,24 @@
 import fs from "fs";
 import path from "path";
 
-let MENU_IMAGE_CACHE = null;
-let MENU_IMAGE_PATH_CACHE = "";
+let menuImageCache = null;
+let menuImageCacheKey = "";
 
-function formatUptime(seconds) {
+function cleanText(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function formatUptime(seconds = 0) {
   const total = Math.max(0, Math.floor(Number(seconds || 0)));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   return `${h}h ${m}m`;
 }
 
-function cleanText(value = "") {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
 function getPrimaryPrefix(settings) {
   if (Array.isArray(settings?.prefix)) {
     return settings.prefix.find((value) => cleanText(value)) || ".";
   }
-
   return cleanText(settings?.prefix || ".") || ".";
 }
 
@@ -28,12 +27,7 @@ function getPrefixLabel(settings) {
     const values = settings.prefix.map((value) => cleanText(value)).filter(Boolean);
     return values.length ? values.join(" | ") : ".";
   }
-
   return cleanText(settings?.prefix || ".") || ".";
-}
-
-function normalizeCategoryLabel(value = "") {
-  return cleanText(value).replace(/_/g, " ").toUpperCase();
 }
 
 function normalizeCategoryKey(value = "") {
@@ -45,13 +39,38 @@ function normalizeCategoryKey(value = "") {
     group: "grupos",
     tool: "herramientas",
     tools: "herramientas",
-    search: "busqueda",
     game: "juegos",
     games: "juegos",
-    system: "sistema",
+    ia: "ia",
+    ai: "ia",
   };
-
   return aliases[key] || key;
+}
+
+function normalizeCategoryLabel(value = "") {
+  return cleanText(value).replace(/_/g, " ").toUpperCase();
+}
+
+function getCategoryIcon(category = "") {
+  const key = normalizeCategoryKey(category);
+  const icons = {
+    menu: "📜",
+    descargas: "📥",
+    busqueda: "🔎",
+    freefire: "🔥",
+    juegos: "🎮",
+    herramientas: "🧰",
+    grupos: "🛡️",
+    subbots: "🤖",
+    economia: "💰",
+    sistema: "⚙️",
+    ia: "🧠",
+    media: "🖼️",
+    anime: "🌸",
+    admin: "👑",
+    vip: "💎",
+  };
+  return icons[key] || "✦";
 }
 
 function getCategorySortIndex(category = "") {
@@ -72,32 +91,9 @@ function getCategorySortIndex(category = "") {
     "admin",
     "vip",
   ];
+
   const index = order.indexOf(normalizeCategoryKey(category));
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
-}
-
-function getCategoryIcon(category = "") {
-  const key = normalizeCategoryKey(category);
-  const icons = {
-    admin: "👑",
-    ai: "🧠",
-    ia: "🧠",
-    anime: "🌸",
-    busqueda: "🔎",
-    descargas: "📥",
-    economia: "💰",
-    freefire: "🔥",
-    grupos: "🛡️",
-    herramientas: "🧰",
-    juegos: "🎮",
-    media: "🖼️",
-    menu: "📜",
-    sistema: "⚙️",
-    subbots: "🤖",
-    vip: "💎",
-  };
-
-  return icons[key] || "✦";
 }
 
 function getSubbotSlot(botId = "") {
@@ -111,7 +107,7 @@ function getMenuContext({ settings, botId = "", botLabel = "" }) {
   if (!normalizedBotId || normalizedBotId === "main") {
     return {
       title: "FSOCIETY BOT PRINCIPAL",
-      botLine: settings?.botName || "Fsociety bot",
+      botLine: settings?.botName || "Fsociety Bot",
     };
   }
 
@@ -125,6 +121,62 @@ function getMenuContext({ settings, botId = "", botLabel = "" }) {
     title: `MENU SUBBOT FSOCIETY ${slot || 1}`,
     botLine: subbotName,
   };
+}
+
+function resolveMenuImagePath() {
+  const base = path.join(process.cwd(), "imagenes", "menu");
+  const candidates = [`${base}.png`, `${base}.jpg`, `${base}.jpeg`, `${base}.webp`];
+  return candidates.find((filePath) => fs.existsSync(filePath)) || "";
+}
+
+function getMenuImageBuffer() {
+  const imagePath = resolveMenuImagePath();
+  if (!imagePath) return null;
+
+  try {
+    const stat = fs.statSync(imagePath);
+    const cacheKey = `${imagePath}:${stat.mtimeMs}:${stat.size}`;
+
+    if (menuImageCache && menuImageCacheKey === cacheKey) {
+      return menuImageCache;
+    }
+
+    const buffer = fs.readFileSync(imagePath);
+    menuImageCache = buffer;
+    menuImageCacheKey = cacheKey;
+    return buffer;
+  } catch {
+    return null;
+  }
+}
+
+function getMainCommand(cmd) {
+  const commandRaw = cmd?.command;
+
+  if (Array.isArray(commandRaw)) {
+    const first = commandRaw.map((value) => cleanText(value)).find(Boolean);
+    return first ? first.toLowerCase() : "";
+  }
+
+  return cleanText(commandRaw).toLowerCase();
+}
+
+function collectCategories(comandos) {
+  const categorias = {};
+
+  for (const cmd of new Set(comandos.values())) {
+    const categoryRaw = cmd?.categoria || cmd?.category;
+    if (!categoryRaw) continue;
+
+    const principal = getMainCommand(cmd);
+    if (!principal) continue;
+
+    const category = normalizeCategoryKey(categoryRaw);
+    if (!categorias[category]) categorias[category] = new Set();
+    categorias[category].add(principal);
+  }
+
+  return categorias;
 }
 
 function buildTopPanel({
@@ -146,14 +198,14 @@ function buildTopPanel({
     `┃ 🗂️ *Categorías:* ${totalCategories}`,
     `┃ 📌 *Comandos:* ${totalCommands}`,
     "┃",
-    "┃ ✦ *Selecciona el comando que quieras usar*",
+    "┃ ✦ *Menú principal del bot*",
     "╰━━━━━━━━━━━━━━━━━━━━━━⬣",
   ].join("\n");
 }
 
 function buildCategoryBlock(category, commands, primaryPrefix) {
   const icon = getCategoryIcon(category);
-  const title = normalizeCategoryLabel(normalizeCategoryKey(category));
+  const title = normalizeCategoryLabel(category);
 
   const lines = [
     `╭─〔 ${icon} ${title} 〕`,
@@ -166,45 +218,12 @@ function buildCategoryBlock(category, commands, primaryPrefix) {
 
 function buildFooter(primaryPrefix) {
   return [
-    "╭─〔 NOTAS 〕",
-    `│ • Usa \`${primaryPrefix}herramientas\` para utilidades`,
-    `│ • Usa \`${primaryPrefix}status\` para ver el estado`,
-    `│ • Usa \`${primaryPrefix}owner\` para soporte`,
+    "╭─〔 AYUDA 〕",
+    `│ • \`${primaryPrefix}status\` → estado del bot`,
+    `│ • \`${primaryPrefix}owner\` → soporte`,
+    `│ • \`${primaryPrefix}menu\` → abrir este menú`,
     "╰────────────⬣",
   ].join("\n");
-}
-
-function resolveMenuImagePath() {
-  if (MENU_IMAGE_PATH_CACHE && fs.existsSync(MENU_IMAGE_PATH_CACHE)) {
-    return MENU_IMAGE_PATH_CACHE;
-  }
-
-  const base = path.join(process.cwd(), "imagenes", "menu");
-  const candidates = [`${base}.png`, `${base}.jpg`, `${base}.jpeg`, `${base}.webp`];
-  const found = candidates.find((filePath) => fs.existsSync(filePath)) || "";
-
-  MENU_IMAGE_PATH_CACHE = found;
-  return found;
-}
-
-function getMenuImageBuffer() {
-  const imagePath = resolveMenuImagePath();
-  if (!imagePath) return null;
-
-  try {
-    const stat = fs.statSync(imagePath);
-    const cacheKey = `${imagePath}:${stat.mtimeMs}:${stat.size}`;
-
-    if (MENU_IMAGE_CACHE?.key === cacheKey && MENU_IMAGE_CACHE?.buffer) {
-      return MENU_IMAGE_CACHE.buffer;
-    }
-
-    const buffer = fs.readFileSync(imagePath);
-    MENU_IMAGE_CACHE = { key: cacheKey, buffer };
-    return buffer;
-  } catch {
-    return null;
-  }
 }
 
 async function react(sock, msg, emoji) {
@@ -217,28 +236,6 @@ async function react(sock, msg, emoji) {
       },
     });
   } catch {}
-}
-
-function collectCategories(comandos) {
-  const categorias = {};
-
-  for (const cmd of new Set(comandos.values())) {
-    const categoryRaw = cmd?.categoria || cmd?.category;
-    const commandRaw = cmd?.command || cmd?.commands;
-    if (!categoryRaw || !commandRaw) continue;
-
-    const category = normalizeCategoryKey(categoryRaw);
-    const principal =
-      cleanText(cmd?.name) ||
-      (Array.isArray(commandRaw) ? cleanText(commandRaw[0]) : cleanText(commandRaw));
-
-    if (!principal) continue;
-
-    if (!categorias[category]) categorias[category] = new Set();
-    categorias[category].add(principal.toLowerCase());
-  }
-
-  return categorias;
 }
 
 export default {
@@ -265,7 +262,7 @@ export default {
         return await sock.sendMessage(
           from,
           {
-            text: "Imagen del menú no encontrada en imagenes/menu.(png/jpg/jpeg/webp).",
+            text: "No encontré la imagen del menú en imagenes/menu.(png|jpg|jpeg|webp).",
             ...global.channelInfo,
           },
           { quoted: msg }
@@ -285,11 +282,11 @@ export default {
       });
 
       const totalCommands = categoryNames.reduce(
-        (sum, category) => sum + Array.from(categorias[category]).length,
+        (sum, category) => sum + categorias[category].size,
         0
       );
 
-      const parts = [
+      const textParts = [
         buildTopPanel({
           settings,
           uptime,
@@ -300,7 +297,11 @@ export default {
           botLine: menuContext.botLine,
         }),
         ...categoryNames.map((category) =>
-          buildCategoryBlock(category, Array.from(categorias[category]).sort(), primaryPrefix)
+          buildCategoryBlock(
+            category,
+            Array.from(categorias[category]).sort((a, b) => a.localeCompare(b)),
+            primaryPrefix
+          )
         ),
         buildFooter(primaryPrefix),
       ];
@@ -309,7 +310,7 @@ export default {
         from,
         {
           image: imageBuffer,
-          caption: parts.join("\n\n").trim(),
+          caption: textParts.join("\n\n").trim(),
           ...global.channelInfo,
         },
         { quoted: msg }
