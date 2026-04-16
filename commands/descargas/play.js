@@ -1,141 +1,159 @@
-import yts from 'yt-search'
+import yts from "yt-search";
 
 function getPrefix(settings) {
   if (Array.isArray(settings?.prefix)) {
-    return settings.prefix.find((value) => String(value || '').trim()) || '.'
+    return settings.prefix.find((value) => String(value || "").trim()) || ".";
   }
 
-  return String(settings?.prefix || '.').trim() || '.'
+  return String(settings?.prefix || ".").trim() || ".";
 }
 
-function clipText(value = '', max = 72) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
-  if (text.length <= max) return text
-  return `${text.slice(0, Math.max(1, max - 3))}...`
+function cleanText(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function clipText(value = "", max = 72) {
+  const text = cleanText(value);
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(1, max - 3))}...`;
 }
 
 function buildCommand(prefix, command, url) {
-  return `${prefix}${command} ${url}`.trim()
+  return `${prefix}${command} ${url}`.trim();
+}
+
+async function react(conn, m, emoji) {
+  try {
+    if (!m?.key) return;
+    await conn.sendMessage(m.key.remoteJid, {
+      react: {
+        text: emoji,
+        key: m.key,
+      },
+    });
+  } catch {}
+}
+
+function formatVideoRow(prefix, video, index, type) {
+  const title = clipText(video?.title || "Sin título", 68);
+  const duration = cleanText(video?.timestamp || "??:??");
+  const author = clipText(video?.author?.name || video?.author || "Desconocido", 28);
+  const url = cleanText(video?.url || "");
+
+  return {
+    header: `${index + 1}`,
+    title,
+    description: `${type} | ${duration} | ${author}`,
+    id: buildCommand(prefix, type === "MP3" ? "ytmp3" : "ytmp4", url),
+  };
 }
 
 export default {
-  name: 'play',
-  command: ['play'],
-  category: 'descarga',
+  name: "play",
+  command: ["play"],
+  categoria: "descarga",
 
   async run(ctx) {
-    const { sock: conn, m, from, args, settings } = ctx
-    const prefix = getPrefix(settings)
+    const { sock: conn, m, from, args, settings } = ctx;
+    const prefix = getPrefix(settings);
 
     try {
-      const query = Array.isArray(args) ? args.join(' ').trim() : ''
+      await react(conn, m, "🔎");
+
+      const query = Array.isArray(args) ? args.join(" ").trim() : "";
 
       if (!query) {
+        await react(conn, m, "❌");
         return await conn.sendMessage(
           from,
-          { text: `Ejemplo:\n${prefix}play ozuna odisea` },
+          {
+            text: [
+              "╭━━━〔 🎵 *PLAY SEARCH* 〕━━━⬣",
+              "┃",
+              "┃ ✦ *USO DEL COMANDO*",
+              "┃",
+              `┃ 📌 ${prefix}play ozuna odisea`,
+              `┃ 📌 ${prefix}play enlace o nombre`,
+              "╰━━━━━━━━━━━━━━━━━━━━⬣",
+            ].join("\n"),
+          },
           { quoted: m }
-        )
+        );
       }
 
-      const res = await yts(query)
-      const videos = Array.isArray(res?.videos) ? res.videos.slice(0, 10) : []
+      const res = await yts(query);
+      const videos = Array.isArray(res?.videos)
+        ? res.videos.filter((v) => cleanText(v?.url)).slice(0, 6)
+        : [];
 
       if (!videos.length) {
+        await react(conn, m, "❌");
         return await conn.sendMessage(
           from,
-          { text: 'No encontré resultados.' },
-          { quoted: m }
-        )
-      }
-
-      let thumbBuffer = null
-      try {
-        if (videos[0]?.thumbnail) {
-          const response = await fetch(videos[0].thumbnail)
-          const arrayBuffer = await response.arrayBuffer()
-          thumbBuffer = Buffer.from(arrayBuffer)
-        }
-      } catch (e) {
-        console.error('Error descargando thumbnail:', e)
-      }
-
-      const mp3Rows = videos.map((v, i) => ({
-        header: `${i + 1}`,
-        title: clipText(v.title || 'Sin titulo', 72),
-        description: clipText(`MP3 | ${v.timestamp || '??:??'} | ${v.author?.name || 'Desconocido'}`, 72),
-        id: buildCommand(prefix, 'ytmp3', v.url)
-      }))
-
-      const mp4Rows = videos.map((v, i) => ({
-        header: `${i + 1}`,
-        title: clipText(v.title || 'Sin titulo', 72),
-        description: clipText(`MP4 | ${v.timestamp || '??:??'} | ${v.author?.name || 'Desconocido'}`, 72),
-        id: buildCommand(prefix, 'ytmp4', v.url)
-      }))
-
-      if (thumbBuffer) {
-        await conn.sendMessage(
-          from,
           {
-            image: thumbBuffer,
-            caption:
-              `🎵 *FSOCIETY BOT*\n\n` +
-              `🔎 Resultado para: *${query}*\n` +
-              `📌 Primer resultado: *${videos[0].title}*\n\n` +
-              `Elige MP3 para descargar audio directo.`
+            text: "No encontré resultados en YouTube.",
           },
           { quoted: m }
-        )
-      } else {
-        await conn.sendMessage(
-          from,
-          {
-            text:
-              `🎵 *FSOCIETY BOT*\n\n` +
-              `🔎 Resultado para: *${query}*\n\n` +
-              `Elige MP3 para descargar audio directo.`
-          },
-          { quoted: m }
-        )
+        );
       }
 
-      return await conn.sendMessage(
+      const first = videos[0];
+      const mp3Rows = videos.map((video, index) =>
+        formatVideoRow(prefix, video, index, "MP3")
+      );
+      const mp4Rows = videos.map((video, index) =>
+        formatVideoRow(prefix, video, index, "MP4")
+      );
+
+      await conn.sendMessage(
         from,
         {
-          text: `Resultados para: ${query}`,
-          title: 'FSOCIETY BOT',
-          subtitle: 'YouTube MP3 / MP4',
-          footer: 'Descargas YouTube',
+          text: [
+            "╭━━━〔 🎧 *FSOCIETY PLAY* 〕━━━⬣",
+            "┃",
+            `┃ 🔎 *Búsqueda:* ${clipText(query, 55)}`,
+            `┃ 🎵 *Top:* ${clipText(first?.title || "Sin título", 55)}`,
+            `┃ ⏱️ *Duración:* ${cleanText(first?.timestamp || "??:??")}`,
+            `┃ 👤 *Canal:* ${clipText(first?.author?.name || first?.author || "Desconocido", 32)}`,
+            "┃",
+            "┃ ✦ Elige si quieres *MP3* o *MP4*",
+            "╰━━━━━━━━━━━━━━━━━━━━⬣",
+          ].join("\n"),
+          title: "FSOCIETY BOT",
+          subtitle: "YouTube MP3 / MP4",
+          footer: "Descargas YouTube",
           interactiveButtons: [
             {
-              name: 'single_select',
+              name: "single_select",
               buttonParamsJson: JSON.stringify({
-                title: 'Elegir descarga',
+                title: "Elegir descarga",
                 sections: [
                   {
-                    title: 'MP3 - Audio rapido',
-                    rows: mp3Rows
+                    title: "MP3 - Audio rápido",
+                    rows: mp3Rows,
                   },
                   {
-                    title: 'MP4 - Video',
-                    rows: mp4Rows
-                  }
-                ]
-              })
-            }
-          ]
+                    title: "MP4 - Video",
+                    rows: mp4Rows,
+                  },
+                ],
+              }),
+            },
+          ],
         },
         { quoted: m }
-      )
+      );
+
+      await react(conn, m, "✅");
     } catch (e) {
-      console.error('Error en ysearch:', e)
+      console.error("Error en play:", e);
+      await react(conn, m, "❌");
 
       return await conn.sendMessage(
         from,
-        { text: `Error en ysearch:\n${e?.message || e}` },
+        { text: `Error en play:\n${e?.message || e}` },
         { quoted: m }
-      )
+      );
     }
-  }
-}
+  },
+};
