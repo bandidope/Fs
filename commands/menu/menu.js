@@ -270,6 +270,23 @@ function buildTopPanel({
   ].join("\n");
 }
 
+function buildCategoryIndex(categoryNames, categories) {
+  const list = categoryNames
+    .map((category) => {
+      const icon = getCategoryIcon(category);
+      const label = normalizeCategoryLabel(category);
+      const count = categories[category]?.length || 0;
+      return `${icon} ${label}(${count})`;
+    })
+    .join(" • ");
+
+  return [
+    "╭─〔 🧭 *CATEGORÍAS* 〕",
+    `┃ ${list}`,
+    "╰────────────⬣",
+  ].join("\n");
+}
+
 function buildCategoryBlock(category, commands, primaryPrefix) {
   const icon = getCategoryIcon(category);
   const title = normalizeCategoryLabel(category);
