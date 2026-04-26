@@ -432,7 +432,7 @@ async function sendEventoPanel({ sock, from, msg, settings, event = null }) {
       from,
       {
         text: `*MODO EVENTO / TORNEO*\n\n${summary}`,
-        title: "FSOCIETY BOT",
+        title: "Gengar Bot 🎮",
         subtitle: "Evento con inscripcion por botones",
         footer: "Selecciona una accion",
         interactiveButtons: [
