@@ -303,6 +303,15 @@ function buildCategoryBlock(category, commands, primaryPrefix) {
   return lines.join("\n");
 }
 
+function buildFooter(primaryPrefix) {
+  return [
+    "╭─〔 💡 *AYUDA* 〕",
+    `┃ ${primaryPrefix}menu → ver menú`,
+    `┃ ${primaryPrefix}status → estado`,
+    `┃ ${primaryPrefix}owner → soporte`,
+    "╰────────────⬣",
+  ].join("\n");
+}
 
 function makeSingleCaption(fullCaption, primaryPrefix) {
   const maxLength = 3900;
