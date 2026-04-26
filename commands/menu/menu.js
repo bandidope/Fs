@@ -43,10 +43,6 @@ function normalizeCategoryKey(value = "") {
     download: "descargas",
     downloads: "descargas",
 
-    busquedas: "busqueda",
-    buscar: "busqueda",
-    search: "busqueda",
-
     grupo: "grupos",
     group: "grupos",
     groups: "grupos",
@@ -57,12 +53,6 @@ function normalizeCategoryKey(value = "") {
 
     game: "juegos",
     games: "juegos",
-
-    economy: "economia",
-    banco: "economia",
-
-    ia: "ia",
-    ai: "ia",
 
     system: "sistema",
 
@@ -82,20 +72,14 @@ function normalizeCategoryLabel(value = "") {
   const labels = {
     menu: "MENÚ",
     descargas: "DESCARGAS",
-    busqueda: "BÚSQUEDA",
     freefire: "FREE FIRE",
     juegos: "JUEGOS",
     herramientas: "HERRAMIENTAS",
     grupos: "GRUPOS",
-    subbots: "SUBBOTS",
-    economia: "ECONOMÍA",
     sistema: "SISTEMA",
-    ia: "IA",
     media: "MULTIMEDIA",
-    anime: "ANIME",
     admin: "ADMIN",
     owner: "OWNER",
-    vip: "VIP",
     otros: "OTROS",
   };
 
@@ -108,20 +92,14 @@ function getCategoryIcon(category = "") {
   const icons = {
     menu: "📜",
     descargas: "📥",
-    busqueda: "🔎",
     freefire: "🔥",
     juegos: "🎮",
     herramientas: "🧰",
     grupos: "🛡️",
-    subbots: "🤖",
-    economia: "💰",
     sistema: "⚙️",
-    ia: "🧠",
     media: "🖼️",
-    anime: "🌸",
     admin: "👑",
     owner: "🛠️",
-    vip: "💎",
     otros: "✦",
   };
 
@@ -132,20 +110,14 @@ function getCategorySortIndex(category = "") {
   const order = [
     "menu",
     "descargas",
-    "busqueda",
     "freefire",
     "juegos",
     "herramientas",
     "grupos",
-    "subbots",
-    "economia",
     "sistema",
-    "ia",
     "media",
-    "anime",
     "admin",
     "owner",
-    "vip",
     "otros",
   ];
 
@@ -163,9 +135,9 @@ function getMenuContext({ settings, botId = "", botLabel = "" }) {
 
   if (!normalizedBotId || normalizedBotId === "main") {
     return {
-      title: "FSOCIETY BOT",
+      title: "Gengar Bot",
       subtitle: "MENÚ PRINCIPAL",
-      botLine: settings?.botName || "Fsociety Bot",
+      botLine: settings?.botName || "Gengar Bot",
     };
   }
 
@@ -174,10 +146,10 @@ function getMenuContext({ settings, botId = "", botLabel = "" }) {
   const subbotName =
     (slot >= 1 && Array.isArray(settings?.subbots) && settings.subbots[slot - 1]?.name) ||
     cleanText(botLabel) ||
-    `Fsociety Subbot ${slot || 1}`;
+    `Gengar Subbot ${slot || 1}`;
 
   return {
-    title: `FSOCIETY SUBBOT ${slot || 1}`,
+    title: `Gengar SUBBOT ${slot || 1}`,
     subtitle: "MENÚ SUBBOT",
     botLine: subbotName,
   };
@@ -286,7 +258,7 @@ function buildTopPanel({
     `╭━━〔 ⚡ *${menuTitle}* ⚡ 〕━━⬣`,
     `┃ ${menuSubtitle}`,
     "┃",
-    `┃ 🤖 *Bot:* ${botLine || settings?.botName || "Fsociety Bot"}`,
+    `┃ 🤖 *Bot:* ${botLine || settings?.botName || "Gengar Bot"}`,
     `┃ 👑 *Owner:* ${settings?.ownerName || "Owner"}`,
     `┃ 🔰 *Prefijo:* ${prefixLabel}`,
     `┃ ⏳ *Activo:* ${uptime}`,
@@ -295,23 +267,6 @@ function buildTopPanel({
     "┃",
     "┃ _Escribe el prefijo + comando._",
     "╰━━━━━━━━━━━━━━━━━━━━⬣",
-  ].join("\n");
-}
-
-function buildCategoryIndex(categoryNames, categories) {
-  const list = categoryNames
-    .map((category) => {
-      const icon = getCategoryIcon(category);
-      const label = normalizeCategoryLabel(category);
-      const count = categories[category]?.length || 0;
-      return `${icon} ${label}(${count})`;
-    })
-    .join(" • ");
-
-  return [
-    "╭─〔 🧭 *CATEGORÍAS* 〕",
-    `┃ ${list}`,
-    "╰────────────⬣",
   ].join("\n");
 }
 
@@ -331,15 +286,6 @@ function buildCategoryBlock(category, commands, primaryPrefix) {
   return lines.join("\n");
 }
 
-function buildFooter(primaryPrefix) {
-  return [
-    "╭─〔 💡 *AYUDA* 〕",
-    `┃ ${primaryPrefix}menu → ver menú`,
-    `┃ ${primaryPrefix}status → estado`,
-    `┃ ${primaryPrefix}owner → soporte`,
-    "╰────────────⬣",
-  ].join("\n");
-}
 
 function makeSingleCaption(fullCaption, primaryPrefix) {
   const maxLength = 3900;
