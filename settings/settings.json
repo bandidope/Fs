@@ -1,10 +1,10 @@
 {
-  "botName": "Fsociety bot",
-  "ownerName": "DVYER",
+  "botName": "Gengar bot",
+  "ownerName": "Whois",
   "prefix": [".", "/", "!", "#"],
-  "ownerNumbers": ["51907376960"],
-  "ownerLids": ["88077330554979"],
-  "botNumber": "5199999",
+  "ownerNumbers": ["51936994155"],
+  "ownerLids": ["222265178386528"],
+  "botNumber": "51904937048",
   "pairingNumber": "",
   "subbot": {
     "publicRequests": true,
@@ -15,128 +15,128 @@
       "slot": 1,
       "enabled": true,
       "label": "SUBBOT1",
-      "name": "Fsociety Subbot 1",
-      "authFolder": "dvyer-session-subbot",
+      "name": "Gengar Subbot 1",
+      "authFolder": "whois-session-subbot",
       "pairingNumber": ""
     },
     {
       "slot": 2,
       "enabled": false,
       "label": "SUBBOT2",
-      "name": "Fsociety Subbot 2",
-      "authFolder": "dvyer-session-subbot-2",
+      "name": "Gengar Subbot 2",
+      "authFolder": "whois-session-subbot-2",
       "pairingNumber": ""
     },
     {
       "slot": 3,
       "enabled": false,
       "label": "SUBBOT3",
-      "name": "Fsociety Subbot 3",
-      "authFolder": "dvyer-session-subbot-3",
+      "name": "Gengar Subbot 3",
+      "authFolder": "whois-session-subbot-3",
       "pairingNumber": ""
     },
     {
       "slot": 4,
       "enabled": false,
       "label": "SUBBOT4",
-      "name": "Fsociety Subbot 4",
-      "authFolder": "dvyer-session-subbot-4",
+      "name": "Gengar Subbot 4",
+      "authFolder": "whois-session-subbot-4",
       "pairingNumber": ""
     },
     {
       "slot": 5,
       "enabled": false,
       "label": "SUBBOT5",
-      "name": "Fsociety Subbot 5",
-      "authFolder": "dvyer-session-subbot-5",
+      "name": "Gengar Subbot 5",
+      "authFolder": "whois-session-subbot-5",
       "pairingNumber": ""
     },
     {
       "slot": 6,
       "enabled": false,
       "label": "SUBBOT6",
-      "name": "Fsociety Subbot 6",
-      "authFolder": "dvyer-session-subbot-6",
+      "name": "Gengar Subbot 6",
+      "authFolder": "whois-session-subbot-6",
       "pairingNumber": ""
     },
     {
       "slot": 7,
       "enabled": false,
       "label": "SUBBOT7",
-      "name": "Fsociety Subbot 7",
-      "authFolder": "dvyer-session-subbot-7",
+      "name": "Gengar Subbot 7",
+      "authFolder": "whois-session-subbot-7",
       "pairingNumber": ""
     },
     {
       "slot": 8,
       "enabled": false,
       "label": "SUBBOT8",
-      "name": "Fsociety Subbot 8",
-      "authFolder": "dvyer-session-subbot-8",
+      "name": "Gengar Subbot 8",
+      "authFolder": "whois-session-subbot-8",
       "pairingNumber": ""
     },
     {
       "slot": 9,
       "enabled": false,
       "label": "SUBBOT9",
-      "name": "Fsociety Subbot 9",
-      "authFolder": "dvyer-session-subbot-9",
+      "name": "Gengar Subbot 9",
+      "authFolder": "whois-session-subbot-9",
       "pairingNumber": ""
     },
     {
       "slot": 10,
       "enabled": false,
       "label": "SUBBOT10",
-      "name": "Fsociety Subbot 10",
-      "authFolder": "dvyer-session-subbot-10",
+      "name": "Gengar Subbot 10",
+      "authFolder": "whois-session-subbot-10",
       "pairingNumber": ""
     },
     {
       "slot": 11,
       "enabled": false,
       "label": "SUBBOT11",
-      "name": "Fsociety Subbot 11",
-      "authFolder": "dvyer-session-subbot-11",
+      "name": "Gengar Subbot 11",
+      "authFolder": "whois-session-subbot-11",
       "pairingNumber": ""
     },
     {
       "slot": 12,
       "enabled": false,
       "label": "SUBBOT12",
-      "name": "Fsociety Subbot 12",
-      "authFolder": "dvyer-session-subbot-12",
+      "name": "Gengar Subbot 12",
+      "authFolder": "whois-session-subbot-12",
       "pairingNumber": ""
     },
     {
       "slot": 13,
       "enabled": false,
       "label": "SUBBOT13",
-      "name": "Fsociety Subbot 13",
-      "authFolder": "dvyer-session-subbot-13",
+      "name": "Gengar Subbot 13",
+      "authFolder": "whois-session-subbot-13",
       "pairingNumber": ""
     },
     {
       "slot": 14,
       "enabled": false,
       "label": "SUBBOT14",
-      "name": "Fsociety Subbot 14",
-      "authFolder": "dvyer-session-subbot-14",
+      "name": "Gengar Subbot 14",
+      "authFolder": "whois-session-subbot-14",
       "pairingNumber": ""
     },
     {
       "slot": 15,
       "enabled": false,
       "label": "SUBBOT15",
-      "name": "Fsociety Subbot 15",
-      "authFolder": "dvyer-session-subbot-15",
+      "name": "Gengar Subbot 15",
+      "authFolder": "whois-session-subbot-15",
       "pairingNumber": ""
     }
   ],
   "system": {
     "autoProfileOnConnect": true,
-    "mainBotBio": "Ya conectado bot Fsociety",
-    "mainBotPhoto": "assets/profile/fsociety-bot-profile",
-    "subbotBioTemplate": "Subbot Fsociety activo",
+    "mainBotBio": "Ya conectado bot Gengar",
+    "mainBotPhoto": "assets/profile/Gengar-bot-profile",
+    "subbotBioTemplate": "Subbot Gengar activo",
     "subbotPhoto": "",
     "economy": {
       "downloadBillingEnabled": false,
@@ -146,7 +146,7 @@
   },
   "newsletter": {
     "enabled": true,
-    "jid": "120363354701957370@newsletter",
-    "name": "Fsociety bot"
+    "jid": "120363419947391620@newsletter",
+    "name": "Gengar bot"
   }
 }
